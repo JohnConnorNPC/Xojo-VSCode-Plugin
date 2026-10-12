@@ -9,13 +9,17 @@
  *     _properties.xojo   ← declarations, one per line, with per-item anchors
  *     _manifest.json     ← machine-readable block metadata
  *   CODEBASE.md          ← project summary, at the export root
+ *
+ *   {globalStoragePath}/exports/_modules/{BlockName}/
+ *     External modules (.xojo_xml_code), one folder per module block, common to every
+ *     project that uses it. MODULE.md lists its contents.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import {
-  XojoBlock, XojoMethod, XojoEvent, XojoProperty, XojoConstant,
+  XojoParser, XojoBlock, XojoMethod, XojoEvent, XojoProperty, XojoConstant,
   type XojoDeclarationKind, type BlockParseFailure, type XojoControlLayout
 } from './xojoParser';
 import { type XojoScope } from './xojoScope';
@@ -71,7 +75,7 @@ export type ExportMode = 'full' | 'incremental';
  * Bump when the shape of a cached block changes, so old sidecars are ignored — otherwise a
  * stale sidecar replays sections missing whatever the new version adds.
  */
-const EXPORT_STATE_VERSION = 7;
+const EXPORT_STATE_VERSION = 8;
 const EXPORT_STATE_FILE    = '_exportstate.json';
 
 /** Per-block control inventory: layout and scope, machine-readable. */
@@ -131,8 +135,10 @@ function readExportState(exportRoot: string, projectFilePath: string): ExportSta
  * Whether a project's export tree can be used as it stands:
  *   missing — no CODEBASE.md (never exported, or the folder was emptied)
  *   broken  — no readable state sidecar, one from another format version, or another project's
- *   stale   — the project file, or an ExternalCode file it references, changed since the
- *             last export
+ *   stale   — the project file changed since the last export
+ *
+ * An external module changing does not make a project stale: modules live in the common
+ * exports/_modules folder, which staleSharedModules checks.
  */
 export type ExportHealth = 'ok' | 'missing' | 'broken' | 'stale';
 
@@ -153,19 +159,7 @@ export function exportHealth(storagePath: string, projectFilePath: string): Expo
   const stamped = /\*\*Source fingerprint:\*\* size=(\d+);mtimeMs=([\d.]+)/.exec(codebase);
   if (!fp || !stamped) return 'stale';
   if (Number(stamped[1]) !== fp.size || Number(stamped[2]) !== fp.mtimeMs) return 'stale';
-  // A shared library saved in the Xojo IDE leaves this project's file untouched.
-  return externalsChanged(state) ? 'stale' : 'ok';
-}
-
-/** True when any resolved ExternalCode unit's file has moved since the state recorded it. */
-function externalsChanged(state: ExportState): boolean {
-  for (const [key, cached] of Object.entries(state.blocks)) {
-    if (!key.includes('|ExternalCode|')) continue;
-    const entry = toArray(cached.manifestEntry)[0];
-    const extPath: string | undefined = entry?.sourceFile || entry?.externalPath;
-    if (extPath && externalStamp(extPath) !== cached.stamp) return true;
-  }
-  return false;
+  return 'ok';
 }
 
 function writeExportState(exportRoot: string, state: ExportState): void {
@@ -222,6 +216,301 @@ function exportDirOwner(exportDir: string): string | undefined {
 
 function samePath(a: string, b: string): boolean {
   return path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
+}
+
+// ── Common external-module folder ────────────────────────────────────────────
+//
+// An external module used to be copied into every project export that included it, so one
+// save of the module re-exported every app using it. Each module block now has one folder
+// under exports/_modules, common to all projects; a project export only points at it.
+
+export const SHARED_MODULES_DIR = '_modules';
+const MODULE_STATE_FILE = '_module.json';
+export const MODULE_DOC_FILE = 'MODULE.md';
+const LEGACY_MODULE_PREFIX = 'ExternalCode_';
+
+interface ModuleState {
+  /** The .xojo_xml_code this folder was exported from, spelled as first seen. */
+  sourceFile: string;
+  block: string;
+  /** externalStamp of sourceFile when the folder was last written. */
+  stamp: string;
+}
+
+type ModuleIndex = Map<string, Array<{ dir: string; state: ModuleState }>>;
+
+export function getSharedModulesRoot(storagePath: string): string {
+  return path.join(storagePath, 'exports', SHARED_MODULES_DIR);
+}
+
+export function isSharedModulePath(storagePath: string, filePath: string): boolean {
+  return normPath(filePath).startsWith(normPath(getSharedModulesRoot(storagePath)) + path.sep);
+}
+
+/** A project export's manifest `dir` for a module folder — relative, so CODEBASE.md links resolve. */
+function sharedRelDir(dir: string): string {
+  return `../${SHARED_MODULES_DIR}/${path.basename(dir)}`;
+}
+
+function readModuleState(dir: string): ModuleState | undefined {
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(dir, MODULE_STATE_FILE), 'utf8'));
+    return s && typeof s.sourceFile === 'string' && typeof s.block === 'string' ? s : undefined;
+  } catch { return undefined; }
+}
+
+/** Every module folder, by the normalised path of the module file it came from. */
+function readModuleIndex(modulesRoot: string): ModuleIndex {
+  const index: ModuleIndex = new Map();
+  let names: string[] = [];
+  try { names = fs.readdirSync(modulesRoot); } catch { return index; }
+  for (const name of names) {
+    const dir   = path.join(modulesRoot, name);
+    const state = readModuleState(dir);
+    if (!state) continue;
+    const k = normPath(state.sourceFile);
+    index.set(k, [...(index.get(k) ?? []), { dir, state }]);
+  }
+  return index;
+}
+
+/**
+ * One spelling per module file. Projects and VS Code spell the same path differently (a
+ * lower-case drive letter from a watcher), and every header names it — two spellings would
+ * have each pass rewrite every file the other wrote.
+ */
+function canonicalModulePath(index: ModuleIndex, modulePath: string): string {
+  return index.get(normPath(modulePath))?.[0]?.state.sourceFile ??
+         path.normalize(modulePath).replace(/^([a-z]):/, (_, d: string) => `${d.toUpperCase()}:`);
+}
+
+/** The block's own name, or name-hash when a different module file already has that folder. */
+function sharedModuleDir(
+  modulesRoot: string, index: ModuleIndex, sourceFile: string, blockName: string
+): string {
+  const mine = index.get(normPath(sourceFile))?.find(e => e.state.block === blockName);
+  if (mine) return mine.dir;
+  const base  = toSafe(blockName) || 'Module';
+  const plain = path.join(modulesRoot, base);
+  const owner = readModuleState(plain)?.sourceFile;
+  if (!owner || samePath(owner, sourceFile)) return plain;
+  const tag = crypto.createHash('sha1').update(normPath(sourceFile), 'utf8').digest('hex').slice(0, 8);
+  return path.join(modulesRoot, `${base}-${tag}`);
+}
+
+/** Documentation kept in MODULE.md across re-exports, else the registry's. */
+function moduleDescriptions(
+  dir: string, sourceFile: string, blockName: string, registry: ModuleRegistry
+): Map<string, string> {
+  const found = extractExistingDescriptions(path.join(dir, MODULE_DOC_FILE));
+  if (!found.has(blockName)) {
+    const entry = Object.values(registry).find(e => samePath(e.path ?? '', sourceFile));
+    if (entry?.description) found.set(blockName, entry.description);
+  }
+  return found;
+}
+
+/** What a pass needs to emit one module block. */
+interface ModuleBlockContext {
+  calledByMap: Map<string, Set<string>>;
+  methodIndex: Map<string, string[]>;
+  blockInfo: BlockInfoMap;
+  forceBodies: boolean;
+  skipDrift: boolean;
+  fingerprint: ProjectFingerprint | null;
+  index: ItemSourceIndex | null;
+}
+
+/** Export one block of a module file into its common folder, with MODULE.md and _module.json. */
+function exportModuleBlock(
+  detailed: XojoBlock, sourceFile: string, stamp: string, modulesRoot: string,
+  index: ModuleIndex, registry: ModuleRegistry, ctx: ModuleBlockContext
+): { dir: string; out: BlockExport; description?: string } {
+  const dir = sharedModuleDir(modulesRoot, index, sourceFile, detailed.name);
+  const descriptions = moduleDescriptions(dir, sourceFile, detailed.name, registry);
+  const out = exportDetailedBlock(
+    detailed, path.basename(dir), modulesRoot, descriptions, ctx.calledByMap, ctx.methodIndex,
+    ctx.blockInfo, ctx.forceBodies, ctx.skipDrift, '', undefined, ctx.fingerprint, ctx.index, true
+  );
+  const state: ModuleState = { sourceFile, block: detailed.name, stamp };
+  writeIfChanged(path.join(dir, MODULE_STATE_FILE), JSON.stringify(state, null, 2));
+  writeIfChanged(path.join(dir, MODULE_DOC_FILE), [
+    `# External module: ${detailed.name}`,
+    ``,
+    `**Source:** \`${sourceFile}\`  `,
+    `**Folder:** \`${dir}\``,
+    ``,
+    `One copy, common to every project that uses this module. Edit the \`.xojo\` files here;`,
+    `VSXojo writes them back to the module file.`,
+    ``,
+    `---`,
+    ``,
+    ...out.codebaseSection
+  ].join('\n'));
+
+  const k = normPath(sourceFile);
+  const entries = (index.get(k) ?? []).filter(e => !samePath(e.dir, dir));
+  index.set(k, [...entries, { dir, state }]);
+  return { dir, out, description: descriptions.get(detailed.name) };
+}
+
+/** Remove a module file's folders for blocks it no longer has. */
+function retireModuleDirs(index: ModuleIndex, sourceFile: string, keep: string[]): void {
+  const kept = new Set(keep.map(normPath));
+  for (const e of index.get(normPath(sourceFile)) ?? []) {
+    if (kept.has(normPath(e.dir))) continue;
+    try { fs.rmSync(e.dir, { recursive: true, force: true }); } catch { /* next pass retries */ }
+    log('CLEAN', `${path.basename(e.dir)} — no longer in ${path.basename(sourceFile)}, folder removed`);
+  }
+  index.set(normPath(sourceFile), (index.get(normPath(sourceFile)) ?? []).filter(e => kept.has(normPath(e.dir))));
+}
+
+/** Parse a module file the way a project's ExternalCode reference is resolved. */
+async function parseModuleFile(filePath: string): Promise<XojoBlock[]> {
+  const parser  = new XojoParser();
+  const scanned = await parser.parseExternalFile(filePath);
+  const out: XojoBlock[] = [];
+  for (const b of scanned) {
+    const d = await parser.parseBlockById(b.type, b.id ?? '', b.name);
+    if (d) out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Refresh one module's common folder without exporting any project — all a save of the
+ * module (in the Xojo IDE, or written back from here) needs. Skipped when every folder of
+ * the module already carries the file's current stamp, unless `force`.
+ */
+export async function exportSharedModule(
+  modulePath: string,
+  storagePath: string,
+  opts: { force?: boolean; forceBodies?: boolean; skipDrift?: boolean } = {}
+): Promise<{ records: ExportRecord[]; dirs: string[]; skipped: boolean }> {
+  const modulesRoot = getSharedModulesRoot(storagePath);
+  const index       = readModuleIndex(modulesRoot);
+  const sourceFile  = canonicalModulePath(index, modulePath);
+  const stamp       = externalStamp(sourceFile);
+  const existing    = index.get(normPath(sourceFile)) ?? [];
+  const current     = existing.length > 0 &&
+    existing.every(e => e.state.stamp === stamp && fs.existsSync(e.dir));
+  if ((current && !opts.force) || !fs.existsSync(sourceFile)) {
+    return { records: [], dirs: existing.map(e => e.dir), skipped: true };
+  }
+
+  beginBulkWrite();
+  const before = filesWritten;
+  const done = logPhase('EXPORT', `${path.basename(sourceFile)} (common module folder)`);
+  try {
+    const blocks = await parseModuleFile(sourceFile);
+    if (blocks.length === 0) {
+      done('nothing parsed — folder left as it was');
+      return { records: [], dirs: existing.map(e => e.dir), skipped: true };
+    }
+    const registry = loadRegistry(storagePath);
+    let itemIndex: ItemSourceIndex | null = null;
+    try { itemIndex = buildItemSourceIndex(fs.readFileSync(sourceFile, 'utf8')); } catch { /* per-item reads */ }
+    const ctx: ModuleBlockContext = {
+      calledByMap: new Map(), methodIndex: new Map(), blockInfo: new Map(),
+      forceBodies: opts.forceBodies ?? true, skipDrift: opts.skipDrift ?? true,
+      fingerprint: getProjectFingerprint(sourceFile), index: itemIndex
+    };
+    const records: ExportRecord[] = [];
+    const dirs: string[] = [];
+    for (const b of blocks) {
+      const r = exportModuleBlock(b, sourceFile, stamp, modulesRoot, index, registry, ctx);
+      records.push(...r.out.records);
+      dirs.push(r.dir);
+    }
+    retireModuleDirs(index, sourceFile, dirs);
+    done(`${records.length} items, ${filesWritten - before} files written`);
+    return { records, dirs, skipped: false };
+  } catch (err) {
+    done(`failed: ${String(err).slice(0, 120)}`);
+    throw err;
+  } finally {
+    endBulkWrite();
+  }
+}
+
+/** The module folders a project's export points at, with the module file each came from. */
+export function sharedModulesOf(
+  storagePath: string, projectPath: string
+): Array<{ dir: string; sourceFile: string }> {
+  const exportRoot = getExportDir(storagePath, projectPath);
+  const out = new Map<string, { dir: string; sourceFile: string }>();
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(exportRoot, '_manifest.json'), 'utf8'));
+    for (const e of Array.isArray(manifest) ? manifest : []) {
+      if (typeof e?.dir !== 'string' || !e.dir.startsWith(`../${SHARED_MODULES_DIR}/`)) continue;
+      const dir = path.join(exportRoot, e.dir);
+      out.set(normPath(dir), { dir, sourceFile: String(e.sourceFile ?? '') });
+    }
+  } catch { /* no manifest yet */ }
+  return [...out.values()];
+}
+
+/** Module files a project uses whose common folder is missing or older than the file. */
+export function staleSharedModules(storagePath: string, projectPath: string): string[] {
+  const out = new Map<string, string>();
+  for (const { dir, sourceFile } of sharedModulesOf(storagePath, projectPath)) {
+    if (!sourceFile || !fs.existsSync(sourceFile)) continue;
+    const state = readModuleState(dir);
+    if (!state || state.stamp !== externalStamp(sourceFile)) out.set(normPath(sourceFile), sourceFile);
+  }
+  return [...out.values()];
+}
+
+/** A project's CODEBASE.md entry for an external module: where it is, not what it holds. */
+function externalStub(
+  detailed: XojoBlock, sourceFile: string, relDir: string, description?: string
+): string[] {
+  const classSuffix = detailed.superclass ? ` (extends ${detailed.superclass})` : '';
+  return [
+    `## [External] ${detailed.type}: ${detailed.name}${classSuffix}`,
+    ...(description ? [`> Documentation: ${description}`] : []),
+    `> Source: \`${sourceFile}\``,
+    `> Folder: \`${relDir}/\` — common to every project that uses this module; ` +
+      `\`${relDir}/${MODULE_DOC_FILE}\` lists its methods, properties and constants.`,
+    '',
+    '---\n'
+  ];
+}
+
+/**
+ * Remove the per-project module copies earlier builds wrote as ExternalCode_* folders. A file
+ * that differs from the common copy may hold an edit never written back, so it is kept under
+ * pending-edits/ first.
+ */
+function retireLegacyModuleCopies(exportRoot: string, moved: Map<string, string>): void {
+  let names: string[] = [];
+  try { names = fs.readdirSync(exportRoot); } catch { return; }
+  const legacy = names.filter(n => n.startsWith(LEGACY_MODULE_PREFIX));
+  if (legacy.length === 0) return;
+  let kept = 0;
+  for (const name of legacy) {
+    const dir    = path.join(exportRoot, name);
+    const shared = moved.get(name.toLowerCase());
+    let files: string[] = [];
+    try { files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.xojo')); } catch { /* gone */ }
+    for (const file of shared ? files : []) {
+      const old = readExistingExport(path.join(dir, file));
+      if (!old) continue;
+      const now = readExistingExport(path.join(shared!, file));
+      if (now && now.partId === old.partId && normalizeBody(now.body) === normalizeBody(old.body)) continue;
+      const head = parseMetadataHeader(old.raw.split(/\r?\n/)[0] ?? '');
+      recordExportOverwrite({
+        sourceFile: head?.sourceFile ?? '', itemName: head?.itemName ?? file, partId: old.partId,
+        exportPath: path.join(dir, file), replacedText: old.raw,
+        reason: 'per-project module copy retired; it differed from the copy in exports/_modules'
+      });
+      kept++;
+    }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* next pass retries */ }
+  }
+  log('CLEAN', `${path.basename(exportRoot)} — removed ${legacy.length} per-project module ` +
+               `cop${legacy.length === 1 ? 'y' : 'ies'}; modules now live in exports/${SHARED_MODULES_DIR}` +
+               (kept ? ` (${kept} differing file${kept === 1 ? '' : 's'} kept under pending-edits/)` : ''));
 }
 
 /**
@@ -930,6 +1219,8 @@ async function runAutoExport(
 
   const units: Unit[] = [];
   const externalBlocksMap = new Map<string, XojoBlock[]>();
+  const modulesRoot = getSharedModulesRoot(storagePath);
+  const moduleIndex = readModuleIndex(modulesRoot);
 
   for (const block of blocks) {
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -953,8 +1244,9 @@ async function runAutoExport(
     }
 
     if (isExt) {
+      // Parsed under the module folder's spelling of the path — see canonicalModulePath.
       const extBlocks = fs.existsSync(extPath!)
-        ? await provider.parseExternalCodeFile(extPath!)
+        ? await provider.parseExternalCodeFile(canonicalModulePath(moduleIndex, extPath!))
         : [];
       if (extBlocks.length > 0) externalBlocksMap.set(block.name, extBlocks);
       units.push({ key, block, stamp, detailed: extBlocks, extPath });
@@ -1144,17 +1436,29 @@ async function runAutoExport(
       const extBlocks = unit.detailed ?? [];
 
       if (extBlocks.length > 0) {
-        // External file resolved — export it fully so the AI can read and edit it
-        // External modules fingerprint their own .xojo_xml_code file
-        const extFp = getProjectFingerprint(extPath) ?? projectFp;
+        // Written to the common module folder; this project's CODEBASE.md only points there.
+        // Calls are still resolved against this project, for its CALLGRAPH.md.
+        const moduleFile = canonicalModulePath(moduleIndex, extPath);
+        const ctx: ModuleBlockContext = {
+          calledByMap, methodIndex, blockInfo, forceBodies, skipDrift,
+          fingerprint: getProjectFingerprint(moduleFile) ?? projectFp,
+          index: indexFor(moduleFile)
+        };
+        const dirs: string[] = [];
         for (const extDetailed of extBlocks) {
-          emit(unit, exportDetailedBlock(
-            extDetailed, toSafe(`ExternalCode_${extDetailed.name}`), exportRoot,
-            existingDescriptions, calledByMap, methodIndex, blockInfo, forceBodies, skipDrift,
-            '[External] ', `> Source: \`${extPath}\``,
-            extFp, indexFor(extDetailed.sourceFile ?? extPath)
-          ));
+          const r = exportModuleBlock(
+            extDetailed, moduleFile, unit.stamp, modulesRoot, moduleIndex, registry, ctx
+          );
+          dirs.push(r.dir);
+          const relDir = sharedRelDir(r.dir);
+          emit(unit, {
+            ...r.out,
+            dirName: relDir,
+            manifestEntry: { ...r.out.manifestEntry, dir: relDir },
+            codebaseSection: externalStub(extDetailed, moduleFile, relDir, r.description)
+          });
         }
+        retireModuleDirs(moduleIndex, moduleFile, dirs);
       } else {
         // File not found on this machine — fall back to registry stub
         const entry   = registry[extPath];
@@ -1235,6 +1539,14 @@ async function runAutoExport(
     ));
   }
 
+  // Replayed units included: a leftover copy is compared before it goes, whatever the cache said.
+  const movedModules = new Map<string, string>();
+  for (const e of manifest) {
+    if (typeof e?.dir !== 'string' || !e.dir.startsWith(`../${SHARED_MODULES_DIR}/`)) continue;
+    movedModules.set(toSafe(`${LEGACY_MODULE_PREFIX}${e.name}`).toLowerCase(), path.join(exportRoot, e.dir));
+  }
+  retireLegacyModuleCopies(exportRoot, movedModules);
+
   // Remove block dirs no longer in the project — full passes only, and only when this pass
   // saw a plausible share of the blocks the last one did. Refusing to prune costs a stale
   // folder; pruning on a short block list costs the whole export tree.
@@ -1262,6 +1574,8 @@ async function runAutoExport(
     const calleeBlock  = callee.slice(0, dotIdx);
     const calleeMethod = callee.slice(dotIdx + 1);
     const dirName      = [...validBlockDirs].find(d => {
+      // A module folder is common to every project, so its calledBy cannot be this one's.
+      if (d.startsWith('../')) return false;
       // dir names are like "Module_App" or "Class_Window1" — match by block name suffix
       const parts = d.split('_');
       return parts.slice(1).join('_') === calleeBlock || d.endsWith(`_${calleeBlock}`);
@@ -1397,7 +1711,10 @@ async function runAutoExport(
     `**Local blocks** — edit the \`> Documentation: *(not yet documented)*\` line under the block`,
     `heading in this file. Replace with \`> Documentation: your description\`. Preserved on re-export.`,
     ``,
-    `**External modules** — write to the global registry:`,
+    `**External modules** — exported once, to \`${modulesRoot}\`, one folder per module, common`,
+    `to every project that uses it; the \`[External]\` entries above point there. Edit the`,
+    `\`> Documentation:\` line in that folder's \`${MODULE_DOC_FILE}\`; it is preserved and every project`,
+    `sees it. A module with none there falls back to the global registry:`,
     `\`${path.join(storagePath, 'module-registry.json')}\``,
     ``,
     `Registry entry format:`,
@@ -1613,6 +1930,9 @@ interface BlockExport {
  * @param headingLabel  Prefix for the ## heading, e.g. '[External] ' (with trailing space)
  * @param sourceNote    Optional line inserted after Documentation, e.g. '> Source: `path`'
  * @param index         ItemSource hashes for this block's source file, built once per pass.
+ * @param shared        A common external-module folder: everything written must read the same
+ *                      whichever project wrote it, so calls (resolved per project) stay out
+ *                      of the section and no _callgraph.json is written.
  */
 function exportDetailedBlock(
   detailed: XojoBlock,
@@ -1627,7 +1947,8 @@ function exportDetailedBlock(
   headingLabel = '',
   sourceNote?: string,
   fingerprint?: ProjectFingerprint | null,
-  index?: ItemSourceIndex | null
+  index?: ItemSourceIndex | null,
+  shared = false
 ): BlockExport {
   const blockDir    = path.join(exportRoot, dirName);
   const codebaseMd: string[]       = [];
@@ -1636,6 +1957,8 @@ function exportDetailedBlock(
   const methodNames: string[] = [];
   const eventNames:  string[] = [];
   if (!fs.existsSync(blockDir)) fs.mkdirSync(blockDir, { recursive: true });
+  // MODULE.md sits inside the folder it describes, so its file references need no prefix.
+  const dirLabel = shared ? '' : `${dirName}/`;
 
   // ── CODEBASE.md block section ─────────────────────────────────────────────
   const classSuffix = detailed.superclass ? ` (extends ${detailed.superclass})` : '';
@@ -1643,7 +1966,7 @@ function exportDetailedBlock(
   const desc = existingDescriptions.get(detailed.name);
   codebaseMd.push(desc ? `> Documentation: ${desc}` : '> Documentation: *(not yet documented)*');
   if (sourceNote) codebaseMd.push(sourceNote);
-  codebaseMd.push(`> Folder: \`${dirName}/\``);
+  if (!shared) codebaseMd.push(`> Folder: \`${dirName}/\``);
   const host = hostLayout(detailed);
   if (host) {
     codebaseMd.push(`> Design surface: ${host.width ?? '?'} × ${host.height ?? '?'}`);
@@ -1670,7 +1993,7 @@ function exportDetailedBlock(
   // Declaration files — rendered by xojoAggregate so the bytes written and the bytes parsed
   // back on save come from one place. The per-line `// vsxojo:partId="…"` anchor is what
   // makes a rename a rename, rather than a delete plus an add that drops the accessors.
-  const validFiles = new Set<string>();
+  const validFiles = new Set<string>(shared ? [MODULE_STATE_FILE, MODULE_DOC_FILE] : []);
 
   const writeAggregate = (kind: AggregateKind): void => {
     const text = renderAggregateFile(detailed, kind);
@@ -1695,12 +2018,12 @@ function exportDetailedBlock(
     };
 
     if (instance.length > 0) {
-      codebaseMd.push(`### Properties — \`${dirName}/${AGGREGATE_FILES.properties}\``);
+      codebaseMd.push(`### Properties — \`${dirLabel}${AGGREGATE_FILES.properties}\``);
       instance.forEach(renderProp);
       codebaseMd.push('');
     }
     if (shared.length > 0) {
-      codebaseMd.push(`### Shared Properties — \`${dirName}/${AGGREGATE_FILES.properties}\``);
+      codebaseMd.push(`### Shared Properties — \`${dirLabel}${AGGREGATE_FILES.properties}\``);
       shared.forEach(renderProp);
       codebaseMd.push('');
     }
@@ -1728,7 +2051,7 @@ function exportDetailedBlock(
   writeAggregate('properties');
 
   if (detailed.constants.length > 0) {
-    codebaseMd.push(`### Constants — \`${dirName}/${AGGREGATE_FILES.constants}\``);
+    codebaseMd.push(`### Constants — \`${dirLabel}${AGGREGATE_FILES.constants}\``);
     for (const c of detailed.constants) {
       const langTag = c.detectedLanguage ? ` *(${c.detectedLanguage})*` : '';
       const locTag  = c.localized ? ' *(localized — variants edit in the Xojo IDE)*' : '';
@@ -1745,7 +2068,7 @@ function exportDetailedBlock(
   writeAggregate('constants');
 
   if (detailed.eventDefs.length > 0) {
-    codebaseMd.push(`### Event Definitions — \`${dirName}/${AGGREGATE_FILES.eventdefs}\``);
+    codebaseMd.push(`### Event Definitions — \`${dirLabel}${AGGREGATE_FILES.eventdefs}\``);
     for (const e of detailed.eventDefs) {
       codebaseMd.push(`- \`${e.declaration}\`${scopeSuffix(e.scope)}`);
       manifestEntry.eventDefs.push(e.declaration);
@@ -1800,7 +2123,7 @@ function exportDetailedBlock(
       const fileRec   = exportMethodFile(blockDir, m, validFiles, records, forceBodies, skipDrift, fingerprint, index);
       const callsInfo = blockCallGraph[m.name]?.calls ?? [];
       codebaseMd.push(`- \`${m.signature || m.name}\`${scopeSuffix(m.scope)} → \`${fileRec.fileName}\``);
-      if (callsInfo.length > 0) {
+      if (callsInfo.length > 0 && !shared) {
         codebaseMd.push(`  - **Calls:** ${callsInfo.map(c => `\`${c}\``).join(', ')}`);
       }
       manifestEntry.methods.push(m.signature || m.name);
@@ -1828,7 +2151,7 @@ function exportDetailedBlock(
       // "Button1.Sub Pressed()", which is neither a name nor valid Xojo.
       const owner = e.controlName ? ` on \`${e.controlName}\`` : '';
       codebaseMd.push(`- \`${e.signature || e.name}\`${owner} → \`${fileRec.fileName}\``);
-      if (callsInfo.length > 0) {
+      if (callsInfo.length > 0 && !shared) {
         codebaseMd.push(`  - **Calls:** ${callsInfo.map(c => `\`${c}\``).join(', ')}`);
       }
       manifestEntry.events.push(
@@ -1848,7 +2171,7 @@ function exportDetailedBlock(
   if (detailed.controls?.length) {
     codebaseMd.push('### Controls');
     codebaseMd.push(
-      `> Every property the project XML states — see \`${dirName}/${CONTROLS_FILE}\` for the ` +
+      `> Every property the project XML states — see \`${dirLabel}${CONTROLS_FILE}\` for the ` +
       `full values. Still not a complete property list: read-only, ColorGroup and private ` +
       `control properties are absent from XML; check the Xojo IDE Inspector for anything not ` +
       `listed here.`
@@ -1954,9 +2277,11 @@ function exportDetailedBlock(
   }
 
   // Write per-block call graph (calledBy populated after all blocks, so updated below)
-  const cgFile = '_callgraph.json';
-  validFiles.add(cgFile);
-  writeIfChanged(path.join(blockDir, cgFile), JSON.stringify(blockCallGraph, null, 2));
+  if (!shared) {
+    const cgFile = '_callgraph.json';
+    validFiles.add(cgFile);
+    writeIfChanged(path.join(blockDir, cgFile), JSON.stringify(blockCallGraph, null, 2));
+  }
 
   pruneDirectory(blockDir, validFiles);
   codebaseMd.push('---\n');
@@ -2228,7 +2553,8 @@ export async function detectExportDrift(
 
   for (const entry of provider.getEditEntries()) {
     // editMap also tracks temp files under edits/ — only exports are re-written
-    if (!path.normalize(entry.filePath).toLowerCase().startsWith(exportRoot)) continue;
+    if (!path.normalize(entry.filePath).toLowerCase().startsWith(exportRoot) &&
+        !isSharedModulePath(storagePath, entry.filePath)) continue;
 
     const existing = readExistingExport(entry.filePath);
     // A PartID mismatch means the file is already orphaned; it gets rewritten
