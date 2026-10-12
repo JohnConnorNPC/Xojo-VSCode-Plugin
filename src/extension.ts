@@ -10,8 +10,11 @@ import { XojoCompletionProvider } from './xojoCompletionProvider';
 import { XojoHoverProvider, BUILTIN_DOCS } from './xojoHoverProvider';
 import {
   autoExport, detectExportDrift, getExportDir, ExportSuperseded,
-  exportHealth, takeDriftReplays, BODY_LINE_OFFSET, type ExportMode, type ExportRecord
+  exportHealth, takeDriftReplays, BODY_LINE_OFFSET, type ExportMode, type ExportRecord,
+  exportSharedModule, isSharedModulePath, sharedModulesOf, staleSharedModules,
+  getSharedModulesRoot, SHARED_MODULES_DIR
 } from './xojoAutoExport';
+import { parseAggregateFile } from './xojoAggregate';
 import { withProjectLock, withExportLock } from './xojoProjectLock';
 import { parseMetadataHeader } from './xojoWriter';
 import {
@@ -222,6 +225,8 @@ export function activate(context: vscode.ExtensionContext) {
   publishPresence();
   context.subscriptions.push({ dispose: () => retractWindow(globalStoragePath) });
   writeSearchIgnore();
+  // Written by earlier builds; nothing reads it now.
+  try { fs.unlinkSync(path.join(globalStoragePath, 'exports', '_modules.json')); } catch { /* absent */ }
 
   // Status bar item for auto-export feedback (non-modal, auto-hides)
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
@@ -882,9 +887,10 @@ export function activate(context: vscode.ExtensionContext) {
   enforceEditorAssociations();
 
   /**
-   * Re-export every project in this window that `changes` concern: the open project when it
-   * owns a changed file, and each linked project whose manifest references one. A shared
-   * .xojo_xml_code library usually has several owners, each with its own export of it.
+   * Bring up to date whatever `changes` concern: a project whose own file changed (the open
+   * one, or a linked one), and the common folder of each external module that changed. A
+   * module is exported once, to exports/_modules, so the projects using it are not
+   * re-exported — every one of them already points at that folder.
    *
    * `except` is a project the caller has already exported.
    */
@@ -893,36 +899,43 @@ export function activate(context: vscode.ExtensionContext) {
   ): Promise<void> => {
     const open = xojoProjectProvider.projectUri?.fsPath;
     let exportOpen = false;
-    const linked = new Map<string, string>();
+    let openUsesModule = false;
+    const linked  = new Map<string, string>();
+    const modules = new Map<string, string>();
     for (const c of changes) {
-      const names: string[] = [];
-      if (open && !samePathCI(open, except) && xojoProjectProvider.ownsSourceFile(c.filePath)) {
+      const notes: string[] = [];
+      if (open && samePathCI(open, c.filePath) && !samePathCI(open, except)) {
         exportOpen = true;
-        names.push(path.basename(open));
+        notes.push(`re-exporting ${path.basename(open)}`);
       }
-      for (const owner of linkedProjects.ownersOf(c.filePath)) {
+      const owners = linkedProjects.ownersOf(c.filePath);
+      for (const owner of owners) {
+        // Only the project file itself; a project merely using a module is not re-exported.
+        if (!samePathCI(owner.projectPath, c.filePath)) continue;
         if (samePathCI(owner.projectPath, open) || samePathCI(owner.projectPath, except)) continue;
-        linked.set(path.normalize(owner.projectPath).toLowerCase(), owner.projectPath);
-        names.push(path.basename(owner.projectPath));
+        linked.set(normKey(owner.projectPath), owner.projectPath);
+        notes.push(`re-exporting ${path.basename(owner.projectPath)}`);
       }
-      if (names.length > 0) log('WATCH', `${c.label} — re-exporting ${names.join(', ')}`);
+      const usedByOpen = !!open && !samePathCI(open, c.filePath) &&
+                         xojoProjectProvider.ownsSourceFile(c.filePath);
+      const isModule = /\.xojo_xml_code$/i.test(c.filePath) && (usedByOpen ||
+        owners.some(o => !samePathCI(o.projectPath, c.filePath)) ||
+        projectsUsingModule(c.filePath).length > 0);
+      if (isModule) {
+        if (usedByOpen) openUsesModule = true;
+        if (isModuleWriter(c.filePath)) {
+          modules.set(normKey(c.filePath), c.filePath);
+          notes.push(`refreshing exports/${SHARED_MODULES_DIR} (no project re-export)`);
+        } else {
+          const w = moduleWriter(c.filePath);
+          notes.push(`exports/${SHARED_MODULES_DIR} is refreshed by window "${w?.workspace ?? w?.pid}"`);
+        }
+      }
+      if (notes.length > 0) log('WATCH', `${c.label} — ${notes.join('; ')}`);
       else if (!except) log('WATCH', `${c.label} — not referenced by any project in this window, ignored`);
     }
 
-    // A shared module is also copied into exports nobody holds. Left alone those copies
-    // showed code the module no longer had; refresh them too, unless another window holds
-    // the project and will do it itself.
-    const unheld = new Map<string, string>();
-    for (const c of changes) {
-      if (!/\.xojo_xml_code$/i.test(c.filePath)) continue;
-      for (const p of projectsUsingModule(c.filePath)) {
-        const k = path.normalize(p).toLowerCase();
-        if (linked.has(k) || samePathCI(p, open) || samePathCI(p, except)) continue;
-        if (linkedProjects.has(p) || otherWindowsHolding(globalStoragePath, p).length > 0) continue;
-        if (fs.existsSync(p)) unheld.set(k, p);
-      }
-    }
-
+    for (const m of modules.values()) await refreshSharedModule(m);
     // Linked first: the open project's export rewrites the context files, whose project
     // table reports each linked export's health.
     for (const p of linked.values()) {
@@ -932,23 +945,45 @@ export function activate(context: vscode.ExtensionContext) {
         log('ERROR', `${path.basename(p)} — re-export failed: ${String(err)}`);
       }
     }
-    for (const p of unheld.values()) {
-      log('WATCH', `${path.basename(p)} — not held by any window; refreshing its copy of the module`);
-      const r = await exportProjectAt(p, { link: false, quiet: true, mode: 'incremental' });
-      if (!r.ok) log('ERROR', `${path.basename(p)} — re-export failed: ${r.error}`);
-    }
     if (exportOpen && open) {
       await xojoProjectProvider.rescanProject();
       // forceBodies: the IDE is the source of truth after a disk change. Incremental
-      // because an IDE save usually touches one block, and an ExternalCode unit is
-      // re-exported whenever its file's stamp moved. backgroundLoadDone is not awaited
+      // because an IDE save usually touches one block. backgroundLoadDone is not awaited
       // — the export parses only changed blocks, so waiting would undo that.
       await runExport(open, false, showStatusInfo, showStatusError, true, true, 'incremental');
-    } else if (linked.size > 0 && open) {
-      writeAIContextFiles(open, extensionUri, globalStoragePath);
+    } else {
+      // The tree caches the module's parse; drop it so the tree shows the new contents.
+      if (openUsesModule) xojoProjectProvider.refresh();
+      if (linked.size > 0 && open) writeAIContextFiles(open, extensionUri, globalStoragePath);
     }
     if (exportOpen || linked.size > 0) showStatusInfo('Re-exported after project change');
+    else if (modules.size > 0) showStatusInfo('Refreshed external module');
   };
+
+  /**
+   * Re-export one module's common folder. Its records go into the open project's edit map
+   * so a save routes without re-reading the file's header.
+   */
+  async function refreshSharedModule(modulePath: string, force = false): Promise<void> {
+    try {
+      const r = await withExportLock(modulePath, () =>
+        exportSharedModule(modulePath, globalStoragePath, { force }));
+      if (r.skipped) return;
+      registerExportRecords(r.records);
+      onExportFinished?.();
+    } catch (err) {
+      log('ERROR', `${path.basename(modulePath)} — module export failed: ${String(err).slice(0, 160)}`);
+    }
+  }
+
+  /** Refresh the common folder of any module these projects use that changed since. */
+  async function freshenSharedModules(projectPaths: string[]): Promise<void> {
+    const stale = new Map<string, string>();
+    for (const p of projectPaths) {
+      for (const m of staleSharedModules(globalStoragePath, p)) stale.set(normKey(m), m);
+    }
+    for (const m of stale.values()) await refreshSharedModule(m);
+  }
 
   // File watchers — re-export (debounced, forceBodies) whichever projects a changed
   // .xojo_xml_project or .xojo_xml_code belongs to, so the exports/ tree tracks IDE edits.
@@ -1094,7 +1129,6 @@ export function activate(context: vscode.ExtensionContext) {
   onExportFinished = () => {
     // The open project's ExternalCode list is only known once it has been scanned.
     rescopeExternalWatchers();
-    writeModuleIndex();
     writeSearchIgnore();
     const drifted = takeDriftReplays();
     const driftKeys = new Set(drifted.map(p => path.normalize(p).toLowerCase()));
@@ -1123,9 +1157,25 @@ export function activate(context: vscode.ExtensionContext) {
   // against itself and discard every edit.
   const origHandleDocumentSave = xojoProjectProvider.handleDocumentSave.bind(xojoProjectProvider);
   xojoProjectProvider.handleDocumentSave = async (doc: vscode.TextDocument, opts?: { replay?: boolean }) => {
+    // Every window sees the common module folder; only one may write an edit made there.
+    if (isSharedModulePath(globalStoragePath, doc.uri.fsPath)) {
+      const target = exportTarget(doc.getText());
+      if (target && !writesSharedEdit(target)) {
+        const w = moduleWriter(target);
+        const by = w ? `window "${w.workspace ?? w.pid}"` : 'another window';
+        log('SKIP', `${path.basename(doc.uri.fsPath)} — ${path.basename(target)} is written back by ${by}`);
+        showStatusInfo(`${path.basename(target)} is written back by ${by}`);
+        return;
+      }
+    }
     recordEditorSave(doc.uri.fsPath, doc.getText());
     return origHandleDocumentSave(doc, opts);
   };
+
+  /** The file an export file writes back to, from its item or declaration-list header. */
+  const exportTarget = (text: string): string | undefined =>
+    parseMetadataHeader(text.split(/\r?\n/, 1)[0] ?? '')?.sourceFile ??
+    parseAggregateFile(text)?.header.sourceFile;
 
   /** A TextDocument stand-in for content read from disk. */
   const docFromDisk = (uri: vscode.Uri, content: string): vscode.TextDocument => ({
@@ -1177,6 +1227,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const health = exportHealth(globalStoragePath, projectPath);
     if (health === 'ok' && !opts.force && !opts.link) {
+      await freshenSharedModules([projectPath]);
       if (opts.notify) {
         vscode.window.showInformationMessage(
           `Export already current — ${exportDir}`,
@@ -1261,7 +1312,8 @@ export function activate(context: vscode.ExtensionContext) {
     if (samePathCI(autoOpenTarget, projectPath) &&
         (!autoOpenSettled || (autoOpened && !xojoProjectProvider.projectUri))) return;
     const health = exportHealth(globalStoragePath, projectPath);
-    if (health === 'ok') return;
+    // A module saved while nothing watched it leaves the project current but its folder old.
+    if (health === 'ok') { await freshenSharedModules([projectPath]); return; }
 
     log('EXPORT', `${path.basename(projectPath)} — export is ${health}, re-exporting`);
     try {
@@ -1305,11 +1357,14 @@ export function activate(context: vscode.ExtensionContext) {
    */
   const handleUnlinkedEdit = (uri: vscode.Uri): void => {
     if (wasOurWrite(uri.fsPath) || wasEditorSave(uri.fsPath)) return;
+    const shared = isSharedModulePath(globalStoragePath, uri.fsPath);
     if (isBulkWriteInProgress()) {
       // Only a module edit can be written from here; hold it like any other mid-export edit.
       try {
-        const head = parseMetadataHeader(fs.readFileSync(uri.fsPath, 'utf8').split(/\r?\n/)[0] ?? '');
-        if (head && canWriteStandaloneModule(head.sourceFile)) deferredDuringBulk.add(uri.fsPath);
+        const head = exportTarget(fs.readFileSync(uri.fsPath, 'utf8'));
+        if (head && (shared ? writesSharedEdit(head) : canWriteStandaloneModule(head))) {
+          deferredDuringBulk.add(uri.fsPath);
+        }
       } catch { /* unreadable — nothing to hold */ }
       return;
     }
@@ -1321,8 +1376,20 @@ export function activate(context: vscode.ExtensionContext) {
     let target  = '';
     try {
       content = fs.readFileSync(uri.fsPath, 'utf8');
-      target  = parseMetadataHeader(content.split(/\r?\n/)[0] ?? '')?.sourceFile ?? '';
+      target  = exportTarget(content) ?? '';
     } catch { /* unreadable — still worth reporting */ }
+
+    // The common module folder belongs to no project. Exactly one window writes its edits;
+    // the rest say once who does.
+    if (shared && target) {
+      if (writesSharedEdit(target)) { handleExternalEdit(uri); return; }
+      if (refusedUnlinked.has(normKey(target))) return;
+      refusedUnlinked.add(normKey(target));
+      const w = moduleWriter(target);
+      log('WATCH', `${name} — ${path.basename(target)} is written back by ` +
+                   `${w ? `window "${w.workspace ?? w.pid}"` : 'another window'}`);
+      return;
+    }
 
     // A shared module stands on its own: written back straight to its .xojo_xml_code, with
     // the same hash checks, whichever export of it was edited.
@@ -1636,8 +1703,17 @@ export function activate(context: vscode.ExtensionContext) {
   function exportFolderOwner(filePath: string): string | undefined {
     const rel = path.relative(path.join(globalStoragePath, 'exports'), filePath);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
-    const first = rel.split(/[\\/]/)[0];
+    const [first, second] = rel.split(/[\\/]/);
     if (!first) return undefined;
+    // A module folder names its .xojo_xml_code, which a request there then targets.
+    if (first === SHARED_MODULES_DIR) {
+      if (!second) return undefined;
+      try {
+        const state = JSON.parse(fs.readFileSync(
+          path.join(getSharedModulesRoot(globalStoragePath), second, '_module.json'), 'utf8')) as { sourceFile?: string };
+        return state.sourceFile || undefined;
+      } catch { return undefined; }
+    }
     try {
       const state = JSON.parse(fs.readFileSync(
         path.join(globalStoragePath, 'exports', first, '_exportstate.json'), 'utf8')) as { sourcePath?: string };
@@ -2067,44 +2143,41 @@ export function activate(context: vscode.ExtensionContext) {
     return [...(scanModuleUsers().get(normKey(modulePath))?.users.values() ?? [])];
   }
 
-  /**
-   * `exports/_modules.json` — which projects use each shared module, so a caller that edited
-   * one knows which apps to rebuild.
-   */
-  function writeModuleIndex(): void {
-    const windows = listWindows(globalStoragePath);
-    const modules: Record<string, object> = {};
-    for (const { modulePath, users } of [...scanModuleUsers().values()]
-           .sort((a, b) => a.modulePath.localeCompare(b.modulePath))) {
-      modules[modulePath] = {
-        exists: fs.existsSync(modulePath),
-        usedBy: [...users.values()].sort().map(p => ({
-          projectPath: p,
-          exportDir: getExportDir(globalStoragePath, p),
-          heldBy: windows
-            .filter(w => samePathCI(w.open, p) || w.linked.some(l => samePathCI(l, p)))
-            .map(w => w.workspace ?? `pid ${w.pid}`)
-        }))
-      };
-    }
-    const file = path.join(globalStoragePath, 'exports', '_modules.json');
-    const body = JSON.stringify({ note: 'Rebuild every usedBy project after editing a module.', modules }, null, 2);
-    try {
-      if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === body) return;
-      fs.writeFileSync(file, body, 'utf8');
-    } catch { /* advisory */ }
-  }
 
   /**
-   * A shared module may be written back from any export of it when no other window holds a
-   * project using it — two windows writing one module would each overwrite the other.
+   * The one window that writes a module back and refreshes its common folder: the lowest pid
+   * among live windows holding a project that uses it, or among all of them when none does.
+   * Every window sees the same folder and works out the same answer, so an edit is written
+   * once — two windows writing one module would each refuse the other's save as stale.
    */
+  function moduleWriter(sourceFile: string, users = projectsUsingModule(sourceFile)): WindowInfo | undefined {
+    const windows = listWindows(globalStoragePath);
+    const holders = windows.filter(w => [sourceFile, ...users].some(u =>
+      samePathCI(w.open, u) || w.linked.some(l => samePathCI(l, u))));
+    return (holders.length > 0 ? holders : windows)
+      .reduce<WindowInfo | undefined>((best, w) => (!best || w.pid < best.pid ? w : best), undefined);
+  }
+
+  function isModuleWriter(sourceFile: string, users?: string[]): boolean {
+    const w = moduleWriter(sourceFile, users);
+    return !w || w.pid === process.pid;
+  }
+
+  /** A module may be written back from its export when this is its writer window. */
   function canWriteStandaloneModule(sourceFile: string): boolean {
     if (!/\.xojo_xml_code$/i.test(sourceFile) || !fs.existsSync(sourceFile)) return false;
     const users = projectsUsingModule(sourceFile);
-    if (users.length === 0) return false;
-    return !listWindows(globalStoragePath).some(w => w.pid !== process.pid &&
-      [sourceFile, ...users].some(u => samePathCI(w.open, u) || w.linked.some(l => samePathCI(l, u))));
+    return users.length > 0 && isModuleWriter(sourceFile, users);
+  }
+
+  /**
+   * Whether this window writes back an edit made in the common module folder. A module no
+   * export manifest lists yet is this window's when its own projects use it.
+   */
+  function writesSharedEdit(sourceFile: string): boolean {
+    const users = projectsUsingModule(sourceFile);
+    if (users.length > 0) return fs.existsSync(sourceFile) && isModuleWriter(sourceFile, users);
+    return xojoProjectProvider.ownsSourceFile(sourceFile) || ownedByLinkedProject(sourceFile);
   }
 
   /** The claimed-request body: run the actions, re-export, then answer. */
@@ -2391,6 +2464,8 @@ export function activate(context: vscode.ExtensionContext) {
       const open = xojoProjectProvider.projectUri?.fsPath;
       if (open && !isBulkWriteInProgress() && exportHealth(globalStoragePath, open) === 'stale') {
         scheduleProjectReExport(open, 'changed externally');
+      } else if (open && !isBulkWriteInProgress()) {
+        await freshenSharedModules([open]);
       }
     } finally {
       focusCheckRunning = false;
@@ -2408,7 +2483,8 @@ function writeCallersReport(methodName: string, projectPath = xojoProjectProvide
   callers: ReturnType<typeof findCallers>; exportsDir: string; outputFile: string;
 } {
   const exportsDir = getExportDir(globalStoragePath, projectPath);
-  const callers    = findCallers(exportsDir, methodName);
+  const callers    = [exportsDir, ...sharedModulesOf(globalStoragePath, projectPath).map(m => m.dir)]
+    .flatMap(dir => findCallers(dir, methodName));
   const outputFile = path.join(exportsDir, '_callers.json');
   fs.writeFileSync(outputFile, JSON.stringify({ method: methodName, callers }, null, 2), 'utf8');
   return { callers, exportsDir, outputFile };
@@ -2439,6 +2515,29 @@ function writeSearchIgnore(): void {
       fs.mkdirSync(root, { recursive: true });
       fs.writeFileSync(file, SEARCH_IGNORE, 'utf8');
     } catch { /* advisory */ }
+  }
+}
+
+/** Track exported files in the open project's edit map, so saves route without a header read. */
+function registerExportRecords(records: ExportRecord[]): void {
+  for (const rec of records) {
+    xojoProjectProvider.registerEdit(rec.filePath, {
+      sourceFile:    rec.sourceFile,
+      partId:        rec.partId,
+      xmlTag:        rec.xmlTag,
+      itemName:      rec.itemName,
+      signatureLine: rec.signatureLine,
+      isFunction:    rec.isFunction,
+      // Carried through so the record stays authoritative for staleness checks and
+      // the restamp no longer has to rewrite the open editor buffer to update it.
+      itemSourceHash: rec.itemSourceHash,
+      // Block identity — without it a PartID shared between container instances
+      // cannot be resolved, and write-back refuses instead of writing to the wrong one.
+      blockId:        rec.blockId,
+      blockType:      rec.blockType,
+      // Which half of a computed property, for Name.Get.xojo / Name.Set.xojo.
+      accessor:       rec.accessor
+    });
   }
 }
 
@@ -2480,25 +2579,7 @@ export async function runExport(
     writeAIContextFiles(projectFilePath, extensionUri, globalStoragePath);
     // A switch during the write phase: the records are valid, but the editMap is the new project's.
     if (!samePathCI(xojoProjectProvider.projectUri?.fsPath, projectFilePath)) return;
-    for (const rec of records) {
-      xojoProjectProvider.registerEdit(rec.filePath, {
-        sourceFile:    rec.sourceFile,
-        partId:        rec.partId,
-        xmlTag:        rec.xmlTag,
-        itemName:      rec.itemName,
-        signatureLine: rec.signatureLine,
-        isFunction:    rec.isFunction,
-        // Carried through so the record stays authoritative for staleness checks and
-        // the restamp no longer has to rewrite the open editor buffer to update it.
-        itemSourceHash: rec.itemSourceHash,
-        // Block identity — without it a PartID shared between container instances
-        // cannot be resolved, and write-back refuses instead of writing to the wrong one.
-        blockId:        rec.blockId,
-        blockType:      rec.blockType,
-        // Which half of a computed property, for Name.Get.xojo / Name.Set.xojo.
-        accessor:       rec.accessor
-      });
-    }
+    registerExportRecords(records);
     if (showNotification) {
       vscode.window.showInformationMessage(
         `Exported ${records.length} items`,
@@ -2730,7 +2811,7 @@ async function runCleanup(
 
   // The edit map now points at files that no longer exist; a stale entry would
   // let a reopened buffer write back against a manifest that has gone.
-  if (chosen.some(c => ['exports', 'edits', 'otherProjects'].includes(c.id))) {
+  if (chosen.some(c => ['exports', 'edits', 'otherProjects', 'sharedModules'].includes(c.id))) {
     xojoProjectProvider.clearEditTracking();
   }
 
@@ -2971,8 +3052,10 @@ function writeAIContextFiles(projectFilePath: string, extensionUri: vscode.Uri, 
   const guideContent  = fs.readFileSync(guideSource, 'utf8');
   const projectDir    = path.dirname(projectFilePath);
   // v5: listProjects / exportProject / linkProject requests, the requests/ inbox and
-  // _writeback_status.json. Prefix match still recognises v1–v4 files.
-  const versionStamp  = `<!-- vsxojo-guide-v5 -->`;
+  // _writeback_status.json. v6: external modules in the common exports/_modules folder.
+  // Prefix match still recognises v1–v5 files.
+  const versionStamp  = `<!-- vsxojo-guide-v6 -->`;
+  const modulesRoot   = getSharedModulesRoot(storagePath);
 
   // The export lives in VS Code's global storage, NOT next to the project file
   const exportRoot   = getExportDir(storagePath, projectFilePath);
@@ -2988,6 +3071,7 @@ function writeAIContextFiles(projectFilePath: string, extensionUri: vscode.Uri, 
     `**App structure (this project's own code, no externals):** \`${path.join(exportRoot, 'PROJECT_MAP.md')}\``,
     `**Every call site:** \`${path.join(exportRoot, 'CALLGRAPH.md')}\``,
     `**Individual method files:** \`${exportRoot}\``,
+    `**External modules (.xojo_xml_code), one folder each, common to every project:** \`${modulesRoot}\``,
     ``,
     ...projectIndexLines(storagePath, projectsIn(projectDir), projectFilePath),
     `---`,
@@ -2999,7 +3083,8 @@ function writeAIContextFiles(projectFilePath: string, extensionUri: vscode.Uri, 
     `Replace it with \`> Documentation: your description\`. It is preserved across re-exports.`,
     ``,
     `When you understand an **external module** (the \`[External]\` entries in CODEBASE.md),`,
-    `write its entry to the global registry:`,
+    `edit the \`> Documentation:\` line in its \`MODULE.md\` under \`${modulesRoot}\` — every`,
+    `project using the module sees it. The global registry is the fallback:`,
     `\`${registryPath}\``,
     ``,
     `See the "Documenting Modules" section at the bottom of CODEBASE.md for the JSON format.`,
@@ -3061,6 +3146,8 @@ function writeAIContextFiles(projectFilePath: string, extensionUri: vscode.Uri, 
     `This gives you a full overview of every class, module, window, and method.`,
     ``,
     `Individual methods are in: \`${exportRoot}\``,
+    ``,
+    `External modules (.xojo_xml_code) are in one folder each, common to every project: \`${modulesRoot}\``,
     ``,
     `How the app is wired together (this project's own code only): \`${path.join(exportRoot, 'PROJECT_MAP.md')}\``,
     ``,
