@@ -7,7 +7,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getExportDir, stripWrapper, normalizeBody, BODY_LINE_OFFSET } from './xojoAutoExport';
+import {
+  getExportDir, sharedModulesOf, stripWrapper, normalizeBody, BODY_LINE_OFFSET
+} from './xojoAutoExport';
 import {
   parseMetadataHeader, extractItemSourceXml, extractAccessorXml, extractItemDefXml
 } from './xojoWriter';
@@ -55,7 +57,12 @@ export function writeSyncReport(storagePath: string, projectPath: string): {
     .filter(e => e.exportPath)
     .map(e => [path.normalize(e.exportPath!).toLowerCase(), e] as const));
 
-  for (const filePath of exportItemFiles(exportDir)) {
+  // The project's external modules live in the common module folder, outside exportDir.
+  const files = [
+    ...exportItemFiles(exportDir),
+    ...sharedModulesOf(storagePath, projectPath).flatMap(m => exportItemFiles(m.dir))
+  ];
+  for (const filePath of files) {
     const file = path.relative(exportDir, filePath).replace(/\\/g, '/');
     let text: string;
     try { text = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
