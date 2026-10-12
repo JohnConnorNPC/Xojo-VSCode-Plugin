@@ -16,6 +16,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** xojoAutoExport's common external-module folder under exports/. */
+const SHARED_MODULES_DIR = '_modules';
+
 /** Header VSXojo puts at the top of every AI context file it writes. */
 export const VSXOJO_STAMP = '<!-- vsxojo-';
 
@@ -290,13 +293,25 @@ export function collectCleanupCategories(opts: CleanupOptions): CleanupCategory[
     [path.join(storagePath, 'logs')]
   ));
 
+  const modulesRoot = path.join(exportsRoot, SHARED_MODULES_DIR);
   if (base) {
     push(out, category(
       'otherProjects',
       'Exports and edit files for other projects',
       'Everything under exports/ and edits/ that does not belong to the open project.',
       false,
-      [...subdirsExcept(exportsRoot, base), ...subdirsExcept(editsRoot, base)]
+      [
+        ...subdirsExcept(exportsRoot, base).filter(d => d !== modulesRoot),
+        ...subdirsExcept(editsRoot, base)
+      ]
+    ));
+    push(out, category(
+      'sharedModules',
+      'External module exports (common to all projects)',
+      'exports/_modules — regenerated when a project using a module is exported. Any ' +
+      'documentation written into MODULE.md is lost.',
+      false,
+      [modulesRoot]
     ));
   }
 
