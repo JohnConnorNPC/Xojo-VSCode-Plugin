@@ -1,228 +1,309 @@
-VSXojo
-A Visual Studio Code extension for reading, navigating, and editing Xojo project files — without ever opening raw XML in an editor tab.
+# VSXojo
 
-Version VS Code License
+> A Visual Studio Code extension for reading, navigating, and editing Xojo project files — without ever opening raw XML in an editor tab.
 
-Why VSXojo?
-Xojo XML project files (.xojo_xml_project) are large, monolithic XML documents. Opening one in a standard text editor loads the entire file into memory, disables editor features like folding and tokenization, and can freeze VS Code entirely.
+![Version](https://img.shields.io/badge/version-0.2.4-blue)
+![VS Code](https://img.shields.io/badge/vscode-%5E1.74.0-blue?logo=visualstudiocode)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+---
+
+## Why VSXojo?
+
+Xojo XML project files (`.xojo_xml_project`) are large, monolithic XML documents. Opening one in a standard text editor loads the entire file into memory, disables editor features like folding and tokenization, and can freeze VS Code entirely.
 
 VSXojo intercepts those files before they ever reach the editor buffer. It parses the XML in the background, builds a navigable tree, and lets you open individual methods, properties, and events as clean, syntax-highlighted code files — each a few lines long. The XML stays closed; your project stays fast.
 
-Binary projects (.xojo_binary_project, .xojo_binary_code) open too — they are transcoded to XML for reading and export, and can be converted to a real XML project when you want to edit them.
+Binary projects (`.xojo_binary_project`, `.xojo_binary_code`) open too — they are transcoded to XML for reading and export, and can be converted to a real XML project when you want to edit them.
 
-Features
-Project Explorer
-Tree view in the Explorer sidebar showing every class, module, window, web page, container, and folder in your project
-Expand any block to see its methods, properties, constants, event definitions, notes, enumerations, structures, delegates, external methods, and controls
-Controls on a window or web page expand to their event handlers
-Picture items open in an image preview (View Image)
-External code references (.xojo_xml_code files) are resolved and displayed inline alongside the main project
-Folder hierarchy mirrors the ObjContainerID nesting in the XML
-Binary projects
-.xojo_binary_project / .xojo_binary_code open read-only: the RbBF container is transcoded to XML in extension storage, and everything downstream (tree, export, AI context) works on that copy
-The transcode is cached and refreshed only when the binary changes
-Convert Binary Project to XML saves a real .xojo_xml_project (default location: beside the original) when you want an editable copy. It refuses rather than writing a lossy file: any field VSXojo cannot map, or any mismatch in block or source-line counts when the result is re-parsed, aborts the conversion with nothing written.
-Write-back and structural edits are refused on a binary project rather than applied to the transcode
-Code Editing
-Click any method, event, or property to open it in a dedicated editor tab
-Full Xojo syntax highlighting with a custom TextMate grammar
-Changes save back to the correct <SourceLine> elements inside the XML — no full-file rewrites
-Properties, constants, and event definitions round-trip through one file per kind (_properties.xojo, _constants.xojo, _eventdefs.xojo), with per-line anchors, so adding or removing a line is a real add or remove in the XML
-Large constants get their own file. A value that spans lines or runs past 200 characters — embedded HTML, JavaScript, CSS, SQL — is exported as Name.const.xojo holding the value verbatim: no JSON quoting, no \n escapes, real line breaks you can edit. _constants.xojo keeps a Const Name = → Name.const.xojo pointer so the block still lists everything in one place. The original line separator (Xojo mostly uses bare CR) is recorded in the file header and restored on write-back, so an untouched save changes nothing at all. Short scalars stay inline where one line each is easier to read.
-A sync status decorator (✓ / ✗) on each exported file shows whether it matches the XML on disk
-Check Sync Status compares every file in the export tree against the XML — constants by value — and writes _sync.json beside CODEBASE.md: a summary, then each unsynced / missing file with the reason, then the declaration lists it does not compare
-Syntax check — errors the compiler is certain to reject (unbalanced If/End If, For/Next, Select/End Select, Try/End Try, #If/#EndIf, or a member called on a New expression) are underlined as you type and listed in the write-back status. It never blocks a save, and reports nothing on 3,600 method bodies from existing projects
-Go to Compiler Line — the compiler's "line N" is line N + 3 of the .xojo file; the command jumps there
-Write-back safety
+---
+
+## Features
+
+### Project Explorer
+
+- Tree view in the Explorer sidebar showing every class, module, window, web page, container, and folder in your project
+- Expand any block to see its methods, properties, constants, event definitions, notes, enumerations, structures, delegates, external methods, and controls
+- Controls on a window or web page expand to their event handlers
+- Picture items open in an image preview (**View Image**)
+- External code references (`.xojo_xml_code` files) are resolved and displayed inline alongside the main project
+- Folder hierarchy mirrors the `ObjContainerID` nesting in the XML
+
+### Binary projects
+
+- `.xojo_binary_project` / `.xojo_binary_code` open read-only: the RbBF container is transcoded to XML in extension storage, and everything downstream (tree, export, AI context) works on that copy
+- The transcode is cached and refreshed only when the binary changes
+- **Convert Binary Project to XML** saves a real `.xojo_xml_project` (default location: beside the original) when you want an editable copy. It refuses rather than writing a lossy file: any field VSXojo cannot map, or any mismatch in block or source-line counts when the result is re-parsed, aborts the conversion with nothing written.
+- Write-back and structural edits are refused on a binary project rather than applied to the transcode
+
+### Code Editing
+
+- Click any method, event, or property to open it in a dedicated editor tab
+- Full Xojo syntax highlighting with a custom TextMate grammar
+- Changes save back to the correct `<SourceLine>` elements inside the XML — no full-file rewrites
+- Properties, constants, and event definitions round-trip through one file per kind (`_properties.xojo`, `_constants.xojo`, `_eventdefs.xojo`), with per-line anchors, so adding or removing a line is a real add or remove in the XML
+- **Large constants get their own file.** A value that spans lines or runs past 200 characters — embedded HTML, JavaScript, CSS, SQL — is exported as `Name.const.xojo` holding the value **verbatim**: no JSON quoting, no `\n` escapes, real line breaks you can edit. `_constants.xojo` keeps a `Const Name = → Name.const.xojo` pointer so the block still lists everything in one place. The original line separator (Xojo mostly uses bare CR) is recorded in the file header and restored on write-back, so an untouched save changes nothing at all. Short scalars stay inline where one line each is easier to read.
+- A sync status decorator (✓ / ✗) on each exported file shows whether it matches the XML on disk
+- **Check Sync Status** compares every file in the export tree against the XML — constants by value — and writes `_sync.json` beside `CODEBASE.md`: a summary, then each `unsynced` / `missing` file with the reason, then the declaration lists it does not compare
+- **Syntax check** — errors the compiler is certain to reject (unbalanced `If`/`End If`, `For`/`Next`, `Select`/`End Select`, `Try`/`End Try`, `#If`/`#EndIf`, or a member called on a `New` expression) are underlined as you type and listed in the write-back status. It never blocks a save, and reports nothing on 3,600 method bodies from existing projects
+- **Go to Compiler Line** — the compiler's "line N" is line N + 3 of the `.xojo` file; the command jumps there
+
+### Write-back safety
+
 Every write to your project file goes through the same path:
 
-Snapshot — a rolling backup is taken first, into extension storage, never into your working copy (vsxojo.backupCount, default 10). Restore Project Backup puts one back.
-Validate — the new XML must parse, keep every item that was not deliberately added or removed, and be a plausible size. A write that fails validation leaves the target untouched and names the snapshot in the error.
-Atomic rename — bytes land in a sibling temp file first, so the project is never observed half-written.
-UIState guard — the <block type="UIState"> region (Xojo IDE editor state, window bounds, breakpoints) is compared byte-for-byte and never allowed to change. Repair Duplicate IDE Window States cleans up duplicates left by older writes.
-Batching — saves coalesce over a short debounce (vsxojo.writeBackDelayMs, default 400 ms) and every item bound for one file is spliced into a single in-memory document and written once. Saving ten files rebuilds the project once.
-One writer per project — exports and write-backs are serialised, so they cannot race the same snapshot or temp file.
-Refused writes are never lost — if a write-back is rejected, the export file keeps your code, is flagged, and a recovery copy is kept under pending-edits/.
-The newer copy wins, and the other one is kept — when an export finds the project and the export file disagreeing, the item's own itemSourceHash decides. If that item has moved on in the project (a Xojo IDE edit), the project's code replaces the export file's and the body it replaced is preserved under pending-edits/ for the retention period. If it has not moved, the difference is a local edit that has not been written back yet: the export leaves the file byte-for-byte as it is and writes the edit back itself. A save of any other item never discards it. Only Refresh Explorer → Overwrite from Project, or a write-back proving the two bodies equivalent, gives the project's copy the tie.
-Every save reports its outcome — _writeback_status.json in the export root records, per file, whether the last write-back was written (with the new itemSourceHash), unchanged, unmodified, refused or partial, with the reason and any syntax-check warnings. A tool that writes files directly can poll it instead of re-reading every file.
-Code is written verbatim — no $ sequence ($$, $&, $1) in a body, constant or control property is ever reinterpreted on the way into the XML.
-Code Intelligence
-Autocomplete — keywords, control structures, built-in types, and method names
-Hover tooltips — type information and direct links to the Xojo documentation for built-in symbols
-Signature panel — a dedicated sidebar view showing the full signature of the currently selected method or event
-Find Callers — searches all exported code files for call sites of the selected method
-Class reference — a version-pinned catalog of Xojo classes, their events and their control properties ships with the extension (resources/xojo-classes-*.json). It is what validates event and property names when new items are created, and it is exported as XOJO_CLASSES.md alongside your project map. Update Xojo Class Reference refreshes it from documentation.xojo.com for the classes your project actually uses.
-Creating and altering items
-New Module, New Class, New Method and New Property are available from the tree. The full set of structural operations — used by the creation-request protocol below — covers:
+- **Snapshot** — a rolling backup is taken first, into extension storage, never into your working copy (`vsxojo.backupCount`, default 10). **Restore Project Backup** puts one back.
+- **Validate** — the new XML must parse, keep every item that was not deliberately added or removed, and be a plausible size. A write that fails validation leaves the target untouched and names the snapshot in the error.
+- **Atomic rename** — bytes land in a sibling temp file first, so the project is never observed half-written.
+- **UIState guard** — the `<block type="UIState">` region (Xojo IDE editor state, window bounds, breakpoints) is compared byte-for-byte and never allowed to change. **Repair Duplicate IDE Window States** cleans up duplicates left by older writes.
+- **Batching** — saves coalesce over a short debounce (`vsxojo.writeBackDelayMs`, default 400 ms) and every item bound for one file is spliced into a single in-memory document and written once. Saving ten files rebuilds the project once.
+- **One writer per project** — exports and write-backs are serialised, so they cannot race the same snapshot or temp file.
+- **Refused writes are never lost** — if a write-back is rejected, the export file keeps your code, is flagged, and a recovery copy is kept under `pending-edits/`.
+- **The newer copy wins, and the other one is kept** — when an export finds the project and the export file disagreeing, the item's own `itemSourceHash` decides. If that item has moved on in the project (a Xojo IDE edit), the project's code replaces the export file's and the body it replaced is preserved under `pending-edits/` for the retention period. If it has *not* moved, the difference is a local edit that has not been written back yet: the export leaves the file byte-for-byte as it is and writes the edit back itself. A save of any *other* item never discards it. Only **Refresh Explorer → Overwrite from Project**, or a write-back proving the two bodies equivalent, gives the project's copy the tie.
+- **Every save reports its outcome** — `_writeback_status.json` in the export root records, per file, whether the last write-back was `written` (with the new `itemSourceHash`), `unchanged`, `unmodified`, `refused` or `partial`, with the reason and any syntax-check warnings. A tool that writes files directly can poll it instead of re-reading every file.
+- **Code is written verbatim** — no `$` sequence (`$$`, `$&`, `$1`) in a body, constant or control property is ever reinterpreted on the way into the XML.
 
-Group	Actions
-Blocks	newProject, newWindow, newModule, newClass, newFolder, renameBlock, moveBlock, deleteBlock, setSuperclass, addInterface
-Members	newMethod, newProperty, newComputedProperty, newConstant, newEvent, newEventDefinition, newNote, newEnumeration, newStructure
-Changes	alterMethod, alterProperty, alterConstant
-Deletes	deleteMethod, deleteProperty, deleteConstant, deleteEventDefinition
-Controls	newControl, alterControl, deleteControl
-All generated XML follows Xojo's format conventions (PartID, ObjContainerID, ItemFlags scope bits, and so on). newEvent names and newControl properties are checked against the class reference for the project's Xojo version — Action on a WebButton is refused with a suggestion of Pressed — unless you turn the check off (vsxojo.classCatalog.enforce) or pass "force": true. alterControl is not catalog-checked: it writes whatever keys _controls.json → properties lists for that instance.
+### Code Intelligence
+
+- **Autocomplete** — keywords, control structures, built-in types, and method names
+- **Hover tooltips** — type information and direct links to the Xojo documentation for built-in symbols
+- **Signature panel** — a dedicated sidebar view showing the full signature of the currently selected method or event
+- **Find Callers** — searches all exported code files for call sites of the selected method
+- **Class reference** — a version-pinned catalog of Xojo classes, their events and their control properties ships with the extension (`resources/xojo-classes-*.json`). It is what validates event and property names when new items are created, and it is exported as `XOJO_CLASSES.md` alongside your project map. **Update Xojo Class Reference** refreshes it from documentation.xojo.com for the classes your project actually uses.
+
+### Creating and altering items
+
+**New Module**, **New Class**, **New Method** and **New Property** are available from the tree. The full set of structural operations — used by the creation-request protocol below — covers:
+
+| Group | Actions |
+|---|---|
+| Blocks | `newProject`, `newWindow`, `newModule`, `newClass`, `newFolder`, `renameBlock`, `moveBlock`, `deleteBlock`, `setSuperclass`, `addInterface` |
+| Members | `newMethod`, `newProperty`, `newComputedProperty`, `newConstant`, `newEvent`, `newEventDefinition`, `newNote`, `newEnumeration`, `newStructure` |
+| Changes | `alterMethod`, `alterProperty`, `alterConstant` |
+| Deletes | `deleteMethod`, `deleteProperty`, `deleteConstant`, `deleteEventDefinition` |
+| Controls | `newControl`, `alterControl`, `deleteControl` |
+
+All generated XML follows Xojo's format conventions (`PartID`, `ObjContainerID`, `ItemFlags` scope bits, and so on). `newEvent` names and `newControl` properties are checked against the class reference for the project's Xojo version — `Action` on a `WebButton` is refused with a suggestion of `Pressed` — unless you turn the check off (`vsxojo.classCatalog.enforce`) or pass `"force": true`. `alterControl` is not catalog-checked: it writes whatever keys `_controls.json` → `properties` lists for that instance.
 
 Two things the actions will not do:
 
-Guess an event signature silently. For a class the reference does not cover, newEvent writes the params you supply, no force needed. With none supplied it still writes a zero-parameter Sub, but the result carries a warning that the handler will never fire if the real event takes parameters.
-Change an event handler's signature. alterMethod on a handler rewrites its body and can rename it; the signature belongs to the event definition on the control's class, so changing it means deleteMethod and a fresh newEvent.
-Every project type is supported, read from <ProjectType> rather than guessed:
+- **Guess an event signature silently.** For a class the reference does not cover, `newEvent` writes the `params` you supply, no `force` needed. With none supplied it still writes a zero-parameter Sub, but the result carries a warning that the handler will never fire if the real event takes parameters.
+- **Change an event handler's signature.** `alterMethod` on a handler rewrites its body and can rename it; the signature belongs to the event definition on the control's class, so changing it means `deleteMethod` and a fresh `newEvent`.
 
-Type	Layouts	Controls	newProject / newWindow
-Desktop (0)	DesktopWindow, Window, DesktopContainer	Desktop*	DesktopWindow
-Console (1)	none	none	refused — a console app has no layouts
-Web (3)	WebView, WebPage, WebContainer	Web*	WebView + Session
-iOS (4)	MobileScreen, MobileContainer, IOSView, IOSLayout, iOSContainer	Mobile*, iOS*	MobileScreen (iOS shape)
-Android (5)	MobileScreen, MobileContainer	Mobile*	MobileScreen (Android shape)
-iOS and Android are separate project types that share the MobileScreen block name and the Mobile* control classes, but not the screen's own properties — iOS has TintColor/TabBarVisible/LargeTitleDisplayMode, Android has SupportedOrientation/HasBackButton/Modal — so newWindow writes the right one for the project it is in. Match the control class family to the host: DesktopButton on a window, WebButton on a page, MobileButton on a screen.
+**Every project type is supported**, read from `<ProjectType>` rather than guessed:
 
-Mobile screens are device-sized and state no Width/Height, so _controls.json reports hostLayout: null for one and adding a control never resizes it. Windows, pages and containers do state a size, and still grow to fit what you add.
+| Type | Layouts | Controls | `newProject` / `newWindow` |
+|---|---|---|---|
+| Desktop (0) | `DesktopWindow`, `Window`, `DesktopContainer` | `Desktop*` | `DesktopWindow` |
+| Console (1) | none | none | refused — a console app has no layouts |
+| Web (3) | `WebView`, `WebPage`, `WebContainer` | `Web*` | `WebView` + `Session` |
+| iOS (4) | `MobileScreen`, `MobileContainer`, `IOSView`, `IOSLayout`, `iOSContainer` | `Mobile*`, `iOS*` | `MobileScreen` (iOS shape) |
+| Android (5) | `MobileScreen`, `MobileContainer` | `Mobile*` | `MobileScreen` (Android shape) |
 
-What a control can be set to is in each block's _controls.json, under properties: every <PropertyVal> the XML states, decoded — including <Hex>-encoded ones. That is where list rows live (InitialValue, one item per line) on WebRadioGroup / WebListBox / WebPopupMenu, and Segments on some iOS/Mobile segmented controls. Those names are exactly what alterControl accepts. Button labels are Caption; label/field contents are Text; check/switch state is Value. It is still not the complete property list — XML omits Desktop list items, pictures, ColorGroup objects, and read-only fields the binary format keeps — so the Xojo IDE Inspector remains the authority for anything absent. newControl accepts any name in XOJO_CLASSES.md plus any the project already sets on that class — so InitialValue, which Xojo writes but the docs catalog does not list, works on both actions without force. A name that is neither is still refused, with a spelling suggestion.
+iOS and Android are separate project types that share the `MobileScreen` block name and the `Mobile*` control classes, but not the screen's own properties — iOS has `TintColor`/`TabBarVisible`/`LargeTitleDisplayMode`, Android has `SupportedOrientation`/`HasBackButton`/`Modal` — so `newWindow` writes the right one for the project it is in. Match the control class family to the host: `DesktopButton` on a window, `WebButton` on a page, `MobileButton` on a screen.
 
-AI Integration — fully automatic
+Mobile screens are device-sized and state no `Width`/`Height`, so `_controls.json` reports `hostLayout: null` for one and adding a control never resizes it. Windows, pages and containers do state a size, and still grow to fit what you add.
+
+**What a control can be set to** is in each block's `_controls.json`, under `properties`: every `<PropertyVal>` the XML states, decoded — including `<Hex>`-encoded ones. That is where list rows live (`InitialValue`, one item per line) on `WebRadioGroup` / `WebListBox` / `WebPopupMenu`, and `Segments` on some iOS/Mobile segmented controls. Those names are exactly what `alterControl` accepts. Button labels are `Caption`; label/field contents are `Text`; check/switch state is `Value`. It is still not the complete property list — XML omits Desktop list items, pictures, ColorGroup objects, and read-only fields the binary format keeps — so the Xojo IDE Inspector remains the authority for anything absent. `newControl` accepts any name in `XOJO_CLASSES.md` **plus** any the project already sets on that class — so `InitialValue`, which Xojo writes but the docs catalog does not list, works on both actions without `force`. A name that is neither is still refused, with a spelling suggestion.
+
+### AI Integration — fully automatic
+
 Every time a project loads, VSXojo generates everything an AI assistant needs — no button clicks required:
 
-File	Written to	Purpose
-CLAUDE.md / .clinerules / .cursorrules / .github/copilot-instructions.md	Project directory + each workspace root	Xojo guide + path hints, auto-discovered by the AI tool on startup
-XOJO_HELP.md	Project directory	Full Xojo language reference
-CODEBASE.md	globalStorageUri/exports/{project}/	Complete project map — every class, module, method, property, and call graph
-XOJO_CLASSES.md	Same export folder	Events and properties of every Xojo class the project uses
-PROJECT_MAP.md	Same export folder	How the project's own code is wired, external modules excluded: block layout, inheritance, which layouts embed which containers, block-to-block dependencies, entry-point call trees, and methods nothing calls
-CALLGRAPH.md	Same export folder	Every method or event with a call site, with all its callers, externals included
-.claude/settings.json (permissions.deny)	Each Xojo project directory + each workspace root	Stops Claude Code reading or editing .xojo_xml_project / .xojo_xml_code directly — see vsxojo.guardProjectXml
-{BlockType}_{BlockName}/*.xojo	Same export folder	Individual method/event bodies, editable and tracked
-{BlockType}_{BlockName}/*.const.xojo	Same export folder	Large constants — HTML, JS, CSS, SQL — as raw editable text
-{BlockType}_{BlockName}/_manifest.json	Same export folder	Machine-readable block metadata
-The AI context files contain the exact path to CODEBASE.md, so the AI can find the full project map without any manual setup. Just open your project and start typing in your AI chat window.
+| File | Written to | Purpose |
+|---|---|---|
+| `CLAUDE.md` / `.clinerules` / `.cursorrules` / `.github/copilot-instructions.md` | Project directory + each workspace root | Xojo guide + path hints, auto-discovered by the AI tool on startup |
+| `XOJO_HELP.md` | Project directory | Full Xojo language reference |
+| `CODEBASE.md` | `globalStorageUri/exports/{project}/` | Complete project map — every class, module, method, property, and call graph |
+| `XOJO_CLASSES.md` | Same export folder | Events and properties of every Xojo class the project uses |
+| `PROJECT_MAP.md` | Same export folder | How the project's own code is wired, external modules excluded: block layout, inheritance, which layouts embed which containers, block-to-block dependencies, entry-point call trees, and methods nothing calls |
+| `CALLGRAPH.md` | Same export folder | Every method or event with a call site, with all its callers, externals included |
+| `.claude/settings.json` (`permissions.deny`) | Each Xojo project directory + each workspace root | Stops Claude Code reading or editing `.xojo_xml_project` / `.xojo_xml_code` directly — see `vsxojo.guardProjectXml` |
+| `{BlockType}_{BlockName}/*.xojo` | Same export folder | Individual method/event bodies, editable and tracked |
+| `{BlockType}_{BlockName}/*.const.xojo` | Same export folder | Large constants — HTML, JS, CSS, SQL — as raw editable text |
+| `{BlockType}_{BlockName}/_manifest.json` | Same export folder | Machine-readable block metadata |
 
-Select AI Tool controls which context files are written (Claude Code, Cline, Cursor, GitHub Copilot, or All). Deselecting a tool removes the file VSXojo wrote for it.
-Export Project for AI manually re-runs the export (useful after large changes or to force a refresh)
-Export Another Project exports a project this window does not have open — pick a recent one, type its name to search disk (including outside the current folder), or browse to the file — so an AI can work on it or diff two projects
-AI-written documentation in CODEBASE.md (block descriptions) is preserved across re-exports; descriptions of shared external modules accumulate in a global module-registry.json
-On first open, VSXojo offers to add the read/edit permissions Claude Code needs for the export and project folders to .claude/settings.json
-Creation-request protocol
+The AI context files contain the exact path to `CODEBASE.md`, so the AI can find the full project map without any manual setup. Just open your project and start typing in your AI chat window.
+
+- **Select AI Tool** controls which context files are written (Claude Code, Cline, Cursor, GitHub Copilot, or All). Deselecting a tool removes the file VSXojo wrote for it.
+- **Export Project for AI** manually re-runs the export (useful after large changes or to force a refresh)
+- **Export Another Project** exports a project this window does not have open — pick a recent one, type its name to search disk (including outside the current folder), or browse to the file — so an AI can work on it or diff two projects
+- AI-written documentation in `CODEBASE.md` (block descriptions) is preserved across re-exports; descriptions of shared external modules accumulate in a global `module-registry.json`
+- On first open, VSXojo offers to add the read/edit permissions Claude Code needs for the export and project folders to `.claude/settings.json`
+
+#### Creation-request protocol
+
 An AI tool creates and alters items by writing JSON, not by editing XML:
 
-Write _xojo_create.json into the project's export folder (single action, or actions: [...] for a batch)
-The VS Code window that has that project open or linked acts on it, deletes the request, and writes _xojo_create_result.json beside it once the export tree is updated ("exported": true)
-The new export files are already in the folder, ready to edit
-Every request gets a result file. A request for a project no window holds is still answered: refreshExport, checkSync and findCallers run read-only against its export, and anything that changes the project links it first — at once for projects under vsxojo.linkRoots, otherwise after one prompt in VS Code, with { "pending": true } in the result until the user answers. The result always echoes the projectPath that was actually targeted. The full request format is documented in the generated CLAUDE.md (source: resources/xojo-guide.md).
+1. Write `_xojo_create.json` into the project's export folder (single action, or `actions: [...]` for a batch)
+2. The VS Code window that has that project open or linked acts on it, deletes the request, and writes `_xojo_create_result.json` beside it once the export tree is updated (`"exported": true`)
+3. The new export files are already in the folder, ready to edit
 
-Window-level requests and the shared inbox
-Every VSXojo window watches requests/ in the extension's global storage. Write <any-name>_xojo_create.json there to act on any project on disk:
+**Every request gets a result file.** A request for a project no window holds is still answered: `refreshExport`, `checkSync` and `findCallers` run read-only against its export, and anything that changes the project links it first — at once for projects under `vsxojo.linkRoots`, otherwise after one prompt in VS Code, with `{ "pending": true }` in the result until the user answers. The result always echoes the `projectPath` that was actually targeted. The full request format is documented in the generated `CLAUDE.md` (source: `resources/xojo-guide.md`).
 
+#### Window-level requests and the shared inbox
+
+Every VSXojo window watches `requests/` in the extension's global storage. Write `<any-name>_xojo_create.json` there to act on any project on disk:
+
+```json
 { "action": "listProjects" }
 { "action": "exportProject", "projectPath": "D:\\SVN\\Servers\\Web DB Server.xojo_xml_project" }
 { "action": "linkProject",   "projectPath": "D:\\SVN\\Servers\\Web DB Server.xojo_xml_project", "persist": true }
 { "action": "unlinkProject", "projectPath": "D:\\SVN\\Servers\\Web DB Server.xojo_xml_project" }
-listProjects reports every project a live window holds or that has an export tree, with its export folder, health and last export time, and which window holds it. exportProject is read-only; linkProject is the request form of Link Related Xojo Project. One window claims each request, so two never both apply it. Windows publish what they hold under windows/ in global storage.
+```
 
-Shared modules
-A .xojo_xml_code module is exported once, to its own folder under exports/_modules/, common to every project that uses it — open another project and it shows the same files. A project's CODEBASE.md lists the module as an [External] entry pointing at that folder, whose MODULE.md lists the module's contents. When the module changes (saved in the Xojo IDE, or written back from here) only that folder is refreshed; no project is re-exported. An edit there is written straight to the module file — with several VS Code windows open, exactly one of them writes it — and a create request can name the module with "externalPath" in place of projectPath.
+`listProjects` reports every project a live window holds or that has an export tree, with its export folder, health and last export time, and which window holds it. `exportProject` is read-only; `linkProject` is the request form of **Link Related Xojo Project**. One window claims each request, so two never both apply it. Windows publish what they hold under `windows/` in global storage.
 
-Export-request protocol
-When the project you need is not in this folder and has no export, write _xojo_export.json next to CLAUDE.md (or in the extension's global storage folder):
+#### Shared modules
 
+A `.xojo_xml_code` module is exported once, to its own folder under `exports/_modules/`, common to every project that uses it — open another project and it shows the same files. A project's `CODEBASE.md` lists the module as an `[External]` entry pointing at that folder, whose `MODULE.md` lists the module's contents. When the module changes (saved in the Xojo IDE, or written back from here) only that folder is refreshed; no project is re-exported. An edit there is written straight to the module file — with several VS Code windows open, exactly one of them writes it — and a create request can name the module with `"externalPath"` in place of `projectPath`.
+
+#### Export-request protocol
+
+When the project you need is not in this folder and has no export, write `_xojo_export.json` next to `CLAUDE.md` (or in the extension's global storage folder):
+
+```json
 { "name": "MDM Web App W2", "link": true }
-Any VSXojo window searches previously exported projects, then the workspace and inferred folders (and vsxojo.projectSearchRoots if set), exports a match, and writes _xojo_export_result.json with exportDir. Several matches come back as candidates — retry with "path". Export Another Project and Link Related Xojo Project in the Command Palette offer the same name search.
+```
 
-Performance
-Two-phase lazy parsing — a fast initial scan populates the tree with names and counts; full content parsing is deferred until you expand a node
-Incremental export — blocks whose raw XML has not changed replay their cached CODEBASE.md section, manifest entry and call list. A full pass on a 5.9 MB web app takes 8–9 seconds; an incremental one is a fraction of that.
-Files exceeding the configurable size limit show a warning instead of silently hanging
-Parsed blocks are cached so re-expanding a node is instant
-Writes are content-hashed so the extension never re-exports in response to its own writes
-The XML file is never opened in an editor tab
-Housekeeping
-Show Activity Log — a timestamped record of every action that touched disk and every watcher event, acted on or ignored, in an output channel and a rolling file (one per VS Code window)
-Clean Up Generated Files — an inventory of everything the extension has written, with counts and sizes, and tick boxes for what to remove
-Clear Pending Edits — empties pending-edits/ and the recorded failures in one step, once you have dealt with them
-Restore Project Backup — pick a snapshot by timestamp and put it back
-Installation
-From GitHub releases
-Download the .vsix
-From a command prompt: code --install-extension vsxojo-0.1.7.vsix
-From Source
+Any VSXojo window searches previously exported projects, then the workspace and inferred folders (and `vsxojo.projectSearchRoots` if set), exports a match, and writes `_xojo_export_result.json` with `exportDir`. Several matches come back as `candidates` — retry with `"path"`. **Export Another Project** and **Link Related Xojo Project** in the Command Palette offer the same name search.
+
+### Performance
+
+- **Two-phase lazy parsing** — a fast initial scan populates the tree with names and counts; full content parsing is deferred until you expand a node
+- **Incremental export** — blocks whose raw XML has not changed replay their cached `CODEBASE.md` section, manifest entry and call list. A full pass on a 5.9 MB web app takes 8–9 seconds; an incremental one is a fraction of that.
+- Files exceeding the configurable size limit show a warning instead of silently hanging
+- Parsed blocks are cached so re-expanding a node is instant
+- Writes are content-hashed so the extension never re-exports in response to its own writes
+- The XML file is never opened in an editor tab
+
+### Housekeeping
+
+- **Show Activity Log** — a timestamped record of every action that touched disk and every watcher event, acted on or ignored, in an output channel and a rolling file (one per VS Code window)
+- **Clean Up Generated Files** — an inventory of everything the extension has written, with counts and sizes, and tick boxes for what to remove
+- **Clear Pending Edits** — empties `pending-edits/` and the recorded failures in one step, once you have dealt with them
+- **Restore Project Backup** — pick a snapshot by timestamp and put it back
+
+---
+
+## Installation
+
+### From GitHub releases
+
+1. Download the `.vsix`
+2. From a command prompt: `code --install-extension vsxojo-0.1.7.vsix`
+
+### From Source
+
+```bash
 git clone https://github.com/StealthUE/Xojo-VSCode-Plugin
 cd vsxojo
 npm install
 npm run compile
-Press F5 to launch an Extension Development Host with the extension loaded.
+```
 
-To package a .vsix for local installation:
+Press **F5** to launch an Extension Development Host with the extension loaded.
 
+To package a `.vsix` for local installation:
+
+```bash
 npx vsce package
 code --install-extension vsxojo-0.1.7.vsix
-Usage
-Opening a Project
-Double-click a .xojo_xml_project, .xojo_xml_code, .xojo_binary_project or .xojo_binary_code file in the file explorer — the custom editor intercepts it and loads the tree automatically
-Or use the Command Palette (Ctrl+Shift+P) and run Open Xojo Project
-The project tab itself is a summary page with buttons for the project folder, the export folder, the activity log, cleanup, reload, and — for binary projects — Convert to XML….
+```
 
-Navigating
-The Xojo Project view appears in the Explorer sidebar. Expand any block to see its contents. Click a method or event to open it as an editable file.
+---
 
-Editing Code
-Click a method or event in the tree
-The code opens in a new tab (xojo-code:// virtual document for read-only preview, or a real temp file for editing)
-Edit and save — the extension snapshots the project, splices the changes into the correct XML elements, validates the result, and renames it into place
-The sync decorator updates to ✓ on success. On a refusal, the file is flagged and your code is preserved.
-Using with AI assistants
-When a project loads, VSXojo automatically writes CLAUDE.md (or the equivalent for your AI tool) into the project directory and generates CODEBASE.md in the extension's storage folder. Both files contain the information the AI needs to understand the project. Other Xojo projects in the workspace are exported too, and listed in CLAUDE.md with their export folders (see Linked projects).
+## Usage
 
-For Claude Code: open the project folder in VS Code, then open a Claude Code chat. Claude reads CLAUDE.md on startup and follows the path it contains to CODEBASE.md.
+### Opening a Project
 
-Use Select AI Tool (vsxojo.aiTool setting) to control which context files are written — defaults to All. Use Export Project for AI only if you want to force a manual refresh of the exported files.
+- Double-click a `.xojo_xml_project`, `.xojo_xml_code`, `.xojo_binary_project` or `.xojo_binary_code` file in the file explorer — the custom editor intercepts it and loads the tree automatically
+- Or use the Command Palette (`Ctrl+Shift+P`) and run **Open Xojo Project**
 
-Instructions alone did not stop an assistant from hand-editing the XML of a project that had never been opened in VSXojo and so had no export. VSXojo now also writes Claude Code deny rules (Read/Edit on **/*.xojo_xml_project and **/*.xojo_xml_code) into .claude/settings.json for every Xojo project it finds in the workspace, whether or not it has been opened. The guide tells the assistant to write _xojo_export.json with the project name when its export is missing, rather than falling back to the XML. Turn the rules off with vsxojo.guardProjectXml. Clean Up Generated Files removes them, and they come back on the next activation unless the setting is off.
+The project tab itself is a summary page with buttons for the project folder, the export folder, the activity log, cleanup, reload, and — for binary projects — **Convert to XML…**.
 
-Finding Callers
-Right-click any method node in the tree and choose Find Callers. The extension searches all exported .xojo files for references to that method name and opens a results view.
+### Navigating
 
-Commands
-Command	ID
-Open Xojo Project	xojo.openProject
-Xojo: Convert Binary Project to XML	xojo.convertToXml
-Refresh from Project (re-export)	xojo.refreshExplorer
-Open in Editor	xojo.openCodeItem
-Export Project for AI (CODEBASE.md)	xojo.exportProject
-Export Another Project	xojo.exportOtherProject
-Link Related Xojo Project	xojo.linkProject
-Unlink Xojo Project	xojo.unlinkProject
-Open Export Folder	xojo.openExportFolder
-Restore Project Backup	xojo.restoreBackup
-Repair Duplicate IDE Window States	xojo.repairUiState
-Clean Up Generated Files	xojo.cleanup
-Clear Pending Edits	xojo.clearPendingEdits
-Show Activity Log	xojo.showLog
-Select AI Tool	xojo.selectAI
-New Module / New Class / New Method / New Property	xojo.newModule / xojo.newClass / xojo.newMethod / xojo.newProperty
-Find Callers	xojo.findCallers
-Check Sync Status	xojo.checkSync
-Xojo: Go to Compiler Line	xojo.gotoCompilerLine
-View Image	xojo.openPicture
-Update Xojo Class Reference	xojo.updateClassReference
-Configuration
-Search for vsxojo in File › Preferences › Settings.
+The **Xojo Project** view appears in the Explorer sidebar. Expand any block to see its contents. Click a method or event to open it as an editable file.
 
-Setting	Type	Default	Description
-vsxojo.maxFileSizeMB	number	50	Files larger than this (in MB) show a warning instead of parsing automatically
-vsxojo.aiTool	enum	"All"	Which AI context files are written: All, Claude Code, Cline, Cursor, GitHub Copilot
-vsxojo.guardProjectXml	boolean	true	Write Claude Code deny rules so Claude cannot read or edit project XML directly
-vsxojo.backupCount	number	10	How many rolling backups of each project file to keep, in extension storage
-vsxojo.backupMaxTotalMB	number	500	Total cap across all projects' backups. Each is a full copy, so backupCount alone is unbounded once several large projects are open. 0 disables the cap
-vsxojo.pendingEditRetentionDays	number	30	How long to keep pending-edits/ copies no longer referenced by a recorded failure. Referenced copies are never removed. 0 keeps everything
-vsxojo.writeBackDelayMs	number	400	How long to wait after a save before writing back, so saves batch into one write
-vsxojo.classCatalog.allowNetwork	boolean	true	Offer to download a class reference from documentation.xojo.com when none is pinned
-vsxojo.classCatalog.enforce	boolean	true	Validate newEvent / newControl names against the class reference
-vsxojo.projectSearchRoots	string[]	[]	Folders to search when finding a Xojo project by name. Empty infers roots from workspace folders and previously exported projects
-vsxojo.linkRoots	string[]	[]	Folders whose projects a request may link without asking (e.g. ["D:\\SVN"]). Anything else prompts once in VS Code
-Architecture
-File Format
-A .xojo_xml_project is a flat XML document. Every class, module, window, folder, and external reference is a <block> element at the root level. Hierarchy is encoded by ObjContainerID — each block points to the ID of its parent folder ("0" means top-level).
+### Editing Code
 
+1. Click a method or event in the tree
+2. The code opens in a new tab (`xojo-code://` virtual document for read-only preview, or a real temp file for editing)
+3. Edit and save — the extension snapshots the project, splices the changes into the correct XML elements, validates the result, and renames it into place
+4. The sync decorator updates to ✓ on success. On a refusal, the file is flagged and your code is preserved.
+
+### Using with AI assistants
+
+When a project loads, VSXojo automatically writes `CLAUDE.md` (or the equivalent for your AI tool) into the project directory and generates `CODEBASE.md` in the extension's storage folder. Both files contain the information the AI needs to understand the project. Other Xojo projects in the workspace are exported too, and listed in `CLAUDE.md` with their export folders (see [Linked projects](#linked-projects)).
+
+For Claude Code: open the project folder in VS Code, then open a Claude Code chat. Claude reads `CLAUDE.md` on startup and follows the path it contains to `CODEBASE.md`.
+
+Use **Select AI Tool** (`vsxojo.aiTool` setting) to control which context files are written — defaults to All. Use **Export Project for AI** only if you want to force a manual refresh of the exported files.
+
+Instructions alone did not stop an assistant from hand-editing the XML of a project that had never been opened in VSXojo and so had no export. VSXojo now also writes Claude Code deny rules (`Read`/`Edit` on `**/*.xojo_xml_project` and `**/*.xojo_xml_code`) into `.claude/settings.json` for every Xojo project it finds in the workspace, whether or not it has been opened. The guide tells the assistant to write `_xojo_export.json` with the project name when its export is missing, rather than falling back to the XML. Turn the rules off with `vsxojo.guardProjectXml`. **Clean Up Generated Files** removes them, and they come back on the next activation unless the setting is off.
+
+### Finding Callers
+
+Right-click any method node in the tree and choose **Find Callers**. The extension searches all exported `.xojo` files for references to that method name and opens a results view.
+
+---
+
+## Commands
+
+| Command | ID |
+|---|---|
+| Open Xojo Project | `xojo.openProject` |
+| Xojo: Convert Binary Project to XML | `xojo.convertToXml` |
+| Refresh from Project (re-export) | `xojo.refreshExplorer` |
+| Open in Editor | `xojo.openCodeItem` |
+| Export Project for AI (CODEBASE.md) | `xojo.exportProject` |
+| Export Another Project | `xojo.exportOtherProject` |
+| Link Related Xojo Project | `xojo.linkProject` |
+| Unlink Xojo Project | `xojo.unlinkProject` |
+| Open Export Folder | `xojo.openExportFolder` |
+| Restore Project Backup | `xojo.restoreBackup` |
+| Repair Duplicate IDE Window States | `xojo.repairUiState` |
+| Clean Up Generated Files | `xojo.cleanup` |
+| Clear Pending Edits | `xojo.clearPendingEdits` |
+| Show Activity Log | `xojo.showLog` |
+| Select AI Tool | `xojo.selectAI` |
+| New Module / New Class / New Method / New Property | `xojo.newModule` / `xojo.newClass` / `xojo.newMethod` / `xojo.newProperty` |
+| Find Callers | `xojo.findCallers` |
+| Check Sync Status | `xojo.checkSync` |
+| Xojo: Go to Compiler Line | `xojo.gotoCompilerLine` |
+| View Image | `xojo.openPicture` |
+| Update Xojo Class Reference | `xojo.updateClassReference` |
+
+---
+
+## Configuration
+
+Search for `vsxojo` in **File › Preferences › Settings**.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `vsxojo.maxFileSizeMB` | `number` | `50` | Files larger than this (in MB) show a warning instead of parsing automatically |
+| `vsxojo.aiTool` | `enum` | `"All"` | Which AI context files are written: `All`, `Claude Code`, `Cline`, `Cursor`, `GitHub Copilot` |
+| `vsxojo.guardProjectXml` | `boolean` | `true` | Write Claude Code deny rules so Claude cannot read or edit project XML directly |
+| `vsxojo.backupCount` | `number` | `10` | How many rolling backups of each project file to keep, in extension storage |
+| `vsxojo.backupMaxTotalMB` | `number` | `500` | Total cap across all projects' backups. Each is a full copy, so `backupCount` alone is unbounded once several large projects are open. `0` disables the cap |
+| `vsxojo.pendingEditRetentionDays` | `number` | `30` | How long to keep `pending-edits/` copies no longer referenced by a recorded failure. Referenced copies are never removed. `0` keeps everything |
+| `vsxojo.writeBackDelayMs` | `number` | `400` | How long to wait after a save before writing back, so saves batch into one write |
+| `vsxojo.classCatalog.allowNetwork` | `boolean` | `true` | Offer to download a class reference from documentation.xojo.com when none is pinned |
+| `vsxojo.classCatalog.enforce` | `boolean` | `true` | Validate `newEvent` / `newControl` names against the class reference |
+| `vsxojo.projectSearchRoots` | `string[]` | `[]` | Folders to search when finding a Xojo project by name. Empty infers roots from workspace folders and previously exported projects |
+| `vsxojo.linkRoots` | `string[]` | `[]` | Folders whose projects a request may link without asking (e.g. `["D:\\SVN"]`). Anything else prompts once in VS Code |
+
+---
+
+## Architecture
+
+### File Format
+
+A `.xojo_xml_project` is a flat XML document. Every class, module, window, folder, and external reference is a `<block>` element at the root level. Hierarchy is encoded by `ObjContainerID` — each block points to the ID of its parent folder (`"0"` means top-level).
+
+```xml
 <root>
   <block type="Module" ID="12345">
     <ObjName>MyModule</ObjName>
@@ -239,47 +320,54 @@ A .xojo_xml_project is a flat XML document. Every class, module, window, folder,
     <ObjContainerID>99</ObjContainerID>  <!-- child of Folder 99 -->
   </block>
 </root>
-A .xojo_binary_project is the same model in Xojo's RbBF container: a header, then 1 KB-aligned Blok records, each a stream of four-character-code chunks. src/xojoBinary.ts decodes it into the same block shape the XML parser produces.
+```
 
-Source Layout
-File	Role
-src/extension.ts	Activation, command registration, watchers, status bar, runExport() orchestrator, AI context files
-src/xojoParser.ts	Two-phase streaming XML parser; defines all data interfaces (XojoBlock, XojoMethod, etc.)
-src/xojoProjectProvider.ts	TreeDataProvider — builds and manages the sidebar tree; transcodes binary projects on open
-src/xojoCustomEditor.ts	CustomReadonlyEditorProvider — intercepts project file opens and renders the project tab
-src/xojoStandaloneProvider.ts	Provider built from an arbitrary file path, for comparison exports
-src/xojoCodeProvider.ts	TextDocumentContentProvider for the xojo-code:// scheme, plus the Xojo indenter
-src/xojoBinary.ts	RbBF codec for .xojo_binary_project / .xojo_binary_code
-src/xojoWriter.ts	Metadata headers; splices an edited item back into its <SourceLine> elements
-src/xojoAggregate.ts	Round-trips _properties.xojo / _constants.xojo / _eventdefs.xojo
-src/xojoBlockLocator.ts	Resolves an item by (block type, block ID, tag, PartID) — PartIDs are not file-unique
-src/xojoWriteQueue.ts	Debounced, batched, serialised write-back
-src/xojoBackup.ts	Snapshot → validate → temp+rename safety net
-src/xojoUiState.ts	Treats the UIState block as read-only and guards it on every write
-src/xojoWriteLedger.ts	Content hashes of everything written, so watcher events from our own writes are ignored
-src/xojoProjectLock.ts	One writer and one exporter per project
-src/xojoWritebackStatus.ts	Persistent record of refused write-backs, so export never overwrites unsaved code; per-file _writeback_status.json outcomes
-src/xojoSyncReport.ts	checkSync: compares any export tree against its XML, with a reason for every mismatch
-src/xojoLint.ts	Conservative syntax check for method bodies — unbalanced blocks, members on New expressions
-src/xojoWindowRegistry.ts	Which VS Code window holds which project, so requests for an unheld project still get answered
-src/xojoAutoExport.ts	Full and incremental export; generates CODEBASE.md, CALLGRAPH.md, PROJECT_MAP.md, XOJO_CLASSES.md
-src/xojoProjectMap.ts	Renders PROJECT_MAP.md from the export's blocks and call graph
-src/xojoCreator.ts	Every structural create / alter / delete action, and the create-request processor
-src/xojoClassCatalog.ts	Versioned catalog of Xojo classes, events and control properties; validation and control composition
-src/xojoClassCatalogFetch.ts	Fetches and parses documentation.xojo.com pages, with consent
-src/xojoCleanup.ts	Inventory and removal of everything the extension writes to disk
-src/xojoLog.ts	Timestamped activity log — output channel plus a rolling per-window file
-src/xojoModuleRegistry.ts	Global registry for external .xojo_xml_code modules; caches AI-generated descriptions
-src/xojoCompletionProvider.ts	IntelliSense completion for Xojo code files
-src/xojoHoverProvider.ts	Hover tooltips with built-in Xojo documentation links
-src/xojoSignaturePanel.ts	WebviewViewProvider for the Signature sidebar panel
-src/xojoSearch.ts	Regex-based caller search across exported files
-src/xojoProjectIndex.ts	Name index of exported projects and a bounded disk search outside the window's folder
-src/xojoProjectPicker.ts	QuickPick: recent projects, search by name, or browse
-src/xojoSyncDecorator.ts	FileDecorationProvider that shows ✓/✗ sync status on exported files
-Supporting assets live in resources/ — the class catalog and its index, event renames, the Xojo guide written into CLAUDE.md, and the language reference written into XOJO_HELP.md.
+A `.xojo_binary_project` is the same model in Xojo's RbBF container: a header, then 1 KB-aligned `Blok` records, each a stream of four-character-code chunks. `src/xojoBinary.ts` decodes it into the same block shape the XML parser produces.
 
-Parse Pipeline
+### Source Layout
+
+| File | Role |
+|---|---|
+| `src/extension.ts` | Activation, command registration, watchers, status bar, `runExport()` orchestrator, AI context files |
+| `src/xojoParser.ts` | Two-phase streaming XML parser; defines all data interfaces (`XojoBlock`, `XojoMethod`, etc.) |
+| `src/xojoProjectProvider.ts` | `TreeDataProvider` — builds and manages the sidebar tree; transcodes binary projects on open |
+| `src/xojoCustomEditor.ts` | `CustomReadonlyEditorProvider` — intercepts project file opens and renders the project tab |
+| `src/xojoStandaloneProvider.ts` | Provider built from an arbitrary file path, for comparison exports |
+| `src/xojoCodeProvider.ts` | `TextDocumentContentProvider` for the `xojo-code://` scheme, plus the Xojo indenter |
+| `src/xojoBinary.ts` | RbBF codec for `.xojo_binary_project` / `.xojo_binary_code` |
+| `src/xojoWriter.ts` | Metadata headers; splices an edited item back into its `<SourceLine>` elements |
+| `src/xojoAggregate.ts` | Round-trips `_properties.xojo` / `_constants.xojo` / `_eventdefs.xojo` |
+| `src/xojoBlockLocator.ts` | Resolves an item by (block type, block ID, tag, PartID) — PartIDs are not file-unique |
+| `src/xojoWriteQueue.ts` | Debounced, batched, serialised write-back |
+| `src/xojoBackup.ts` | Snapshot → validate → temp+rename safety net |
+| `src/xojoUiState.ts` | Treats the `UIState` block as read-only and guards it on every write |
+| `src/xojoWriteLedger.ts` | Content hashes of everything written, so watcher events from our own writes are ignored |
+| `src/xojoProjectLock.ts` | One writer and one exporter per project |
+| `src/xojoWritebackStatus.ts` | Persistent record of refused write-backs, so export never overwrites unsaved code; per-file `_writeback_status.json` outcomes |
+| `src/xojoSyncReport.ts` | `checkSync`: compares any export tree against its XML, with a reason for every mismatch |
+| `src/xojoLint.ts` | Conservative syntax check for method bodies — unbalanced blocks, members on `New` expressions |
+| `src/xojoWindowRegistry.ts` | Which VS Code window holds which project, so requests for an unheld project still get answered |
+| `src/xojoAutoExport.ts` | Full and incremental export; generates `CODEBASE.md`, `CALLGRAPH.md`, `PROJECT_MAP.md`, `XOJO_CLASSES.md` |
+| `src/xojoProjectMap.ts` | Renders `PROJECT_MAP.md` from the export's blocks and call graph |
+| `src/xojoCreator.ts` | Every structural create / alter / delete action, and the create-request processor |
+| `src/xojoClassCatalog.ts` | Versioned catalog of Xojo classes, events and control properties; validation and control composition |
+| `src/xojoClassCatalogFetch.ts` | Fetches and parses documentation.xojo.com pages, with consent |
+| `src/xojoCleanup.ts` | Inventory and removal of everything the extension writes to disk |
+| `src/xojoLog.ts` | Timestamped activity log — output channel plus a rolling per-window file |
+| `src/xojoModuleRegistry.ts` | Global registry for external `.xojo_xml_code` modules; caches AI-generated descriptions |
+| `src/xojoCompletionProvider.ts` | IntelliSense completion for Xojo code files |
+| `src/xojoHoverProvider.ts` | Hover tooltips with built-in Xojo documentation links |
+| `src/xojoSignaturePanel.ts` | `WebviewViewProvider` for the Signature sidebar panel |
+| `src/xojoSearch.ts` | Regex-based caller search across exported files |
+| `src/xojoProjectIndex.ts` | Name index of exported projects and a bounded disk search outside the window's folder |
+| `src/xojoProjectPicker.ts` | QuickPick: recent projects, search by name, or browse |
+| `src/xojoSyncDecorator.ts` | `FileDecorationProvider` that shows ✓/✗ sync status on exported files |
+
+Supporting assets live in `resources/` — the class catalog and its index, event renames, the Xojo guide written into `CLAUDE.md`, and the language reference written into `XOJO_HELP.md`.
+
+### Parse Pipeline
+
+```
 .xojo_xml_project opens          .xojo_binary_project opens
         │                                 │
         │                        transcode RbBF → XML (cached)
@@ -302,7 +390,11 @@ Parse Pipeline
          Phase 2 — parseBlockById()
            looks up raw XML from cache
            full parse → XojoBlock with methods/properties/events
-Write-back Pipeline
+```
+
+### Write-back Pipeline
+
+```
 user saves an exported .xojo file
         │
         ▼
@@ -325,9 +417,13 @@ user saves an exported .xojo file
    │           │
    ▼           ▼
  sync ✓   file flagged, recovery copy kept, export will not overwrite it
-Export Storage
-All generated files are written to VS Code's globalStorageUri — never alongside your source project:
+```
 
+### Export Storage
+
+All generated files are written to VS Code's `globalStorageUri` — never alongside your source project:
+
+```
 globalStoragePath/
   exports/{projectName}/    ← auto-export (CODEBASE.md, PROJECT_MAP.md, XOJO_CLASSES.md, CALLGRAPH.md, .xojo files)
   exports/_modules/{Name}/  ← external modules, one folder each, common to every project (MODULE.md, .xojo files)
@@ -338,41 +434,89 @@ globalStoragePath/
   pending-edits/            ← copies of edits a write-back refused, or an export replaced
   module-registry.json      ← shared descriptions of external modules
   project-index.json        ← paths of projects this machine has exported, for search-by-name
-Linked projects
-A window has one open project — the one in the Xojo Explorer — but writes back to every project it has linked. Every Xojo project in the workspace folder is linked on activation, and others are added with Link Related Xojo Project (Command Palette, the Explorer toolbar, or right-click a .xojo_xml_project), which persists for that window. The command palette path can search by project name, including outside this folder. So two projects in one folder, or a shared library elsewhere on disk, can both be edited in a session without switching anything.
+```
 
-Opening a folder loads the most recently saved .xojo_xml_project in it (or the newest .xojo_xml_code if there is no project), with no picker. A project tab VS Code restores on its own takes precedence. A window opened on a single file reopens the project it last had.
+### Linked projects
 
-Every linked project keeps a usable export. On activation, and each time the window regains focus, VSXojo checks each linked project that is not open. If its export is missing (no CODEBASE.md), broken (unreadable or outdated state file) or stale (the project file changed since the export was stamped), VSXojo re-exports it in the background: incrementally when stale, in full otherwise. The open project exports through the normal open path. CLAUDE.md lists every project with its export folder and status, so an assistant working on a project other than the open one goes to that export rather than the XML.
+A window has one *open* project — the one in the Xojo Explorer — but writes back to every
+project it has **linked**. Every Xojo project in the workspace folder is linked on
+activation, and others are added with **Link Related Xojo Project** (Command Palette, the
+Explorer toolbar, or right-click a `.xojo_xml_project`), which persists for that window.
+The command palette path can search by project name, including outside this folder.
+So two projects in one folder, or a shared library elsewhere on disk, can both be edited in
+a session without switching anything.
 
-Editing an export whose project is not linked writes nothing — but it is never silent: you get a [REFUSE] line in the activity log, a recovery copy under pending-edits/, and a prompt offering to link the project.
+**Opening a folder** loads the most recently saved `.xojo_xml_project` in it (or the newest
+`.xojo_xml_code` if there is no project), with no picker. A project tab VS Code restores on its
+own takes precedence. A window opened on a single file reopens the project it last had.
 
-That prompt is only for a project in this window's folders, which is the only case where linking it here is the fix. An edit to an export belonging to a project another window has open is logged once and otherwise left alone — the window that owns it is already handling it, and warning about it in every open window produced one popup per file written.
+**Every linked project keeps a usable export.** On activation, and each time the window
+regains focus, VSXojo checks each linked project that is not open. If its export is missing
+(no `CODEBASE.md`), broken (unreadable or outdated state file) or stale (the project file
+changed since the export was stamped), VSXojo re-exports it in the background: incrementally
+when stale, in full otherwise. The open project exports through the normal open path.
+`CLAUDE.md` lists every project with its export folder and status, so an assistant working
+on a project other than the open one goes to that export rather than the XML.
 
-Membership belongs to the window, not the profile, so two windows on the same folder do not interfere. The activity log is per window too — Show Activity Log opens this window's file.
+Editing an export whose project is not linked writes nothing — but it is never silent: you
+get a `[REFUSE]` line in the activity log, a recovery copy under `pending-edits/`, and a
+prompt offering to link the project.
 
-The exception is AI context files (CLAUDE.md, .clinerules, .cursorrules, .github/copilot-instructions.md, XOJO_HELP.md), which have to sit next to the project and in each workspace root for the AI tool to find them. They carry a <!-- vsxojo- --> header; a file of the same name without it was written by you and is never overwritten.
+That prompt is only for a project in *this* window's folders, which is the only case where
+linking it here is the fix. An edit to an export belonging to a project another window has
+open is logged once and otherwise left alone — the window that owns it is already handling
+it, and warning about it in every open window produced one popup per file written.
 
-Cleaning Up
-Clean Up Files — on the project tab, or Clean Up Generated Files in the Command Palette — lists everything the extension has written, with file counts and sizes, and removes whatever you tick. Exports, edit temps, logs, leftover write temps and AI context files are ticked by default because an export rebuilds them. Backups, refused-write recovery copies, other projects' exports, the module registry and VSXojo's .claude permission entries are left unticked: they hold work the project file cannot regenerate.
+Membership belongs to the window, not the profile, so two windows on the same folder do not
+interfere. The activity log is per window too — `Show Activity Log` opens this window's file.
 
-Clear Pending Edits does that one category in a single step, with a confirm naming the count and size — for when pending-edits/ has filled up with copies you have already dealt with and picking through the full inventory for them is the wrong shape. Your project file is never touched.
+The exception is AI context files (`CLAUDE.md`, `.clinerules`, `.cursorrules`,
+`.github/copilot-instructions.md`, `XOJO_HELP.md`), which have to sit next to the project
+and in each workspace root for the AI tool to find them. They carry a `<!-- vsxojo- -->`
+header; a file of the same name without it was written by you and is never overwritten.
 
-Development
+### Cleaning Up
+
+**Clean Up Files** — on the project tab, or `Clean Up Generated Files` in the Command
+Palette — lists everything the extension has written, with file counts and sizes, and
+removes whatever you tick. Exports, edit temps, logs, leftover write temps and AI context
+files are ticked by default because an export rebuilds them. Backups, refused-write
+recovery copies, other projects' exports, the module registry and VSXojo's `.claude`
+permission entries are left unticked: they hold work the project file cannot regenerate.
+
+**Clear Pending Edits** does that one category in a single step, with a confirm naming the
+count and size — for when `pending-edits/` has filled up with copies you have already dealt
+with and picking through the full inventory for them is the wrong shape.
+Your project file is never touched.
+
+---
+
+## Development
+
+```bash
 npm run compile        # tsc → out/
 npm run watch          # tsc --watch
 npm run lint           # eslint src
 npm test               # compile, then scripts/node-tests.js (127 tests)
 npm run build:catalog  # rebuild resources/xojo-classes-*.json
-The test harness runs under plain Node against a stub vscode module (scripts/vscode-stub.js), so the parser, writer, aggregate, creator, backup and binary layers are all testable without an Extension Development Host. scripts/ also holds the binary-format diff and read-path tools used when extending RbBF support.
+```
 
-Contributing
-Fork the repository
-Create a feature branch (git checkout -b feature/my-feature)
-Make and test your changes — test with both small and large (>10 MB) project files
-Run npm run lint and npm test before committing
-Open a pull request with a description of what changed and why
-Bug reports and feature requests are welcome via GitHub Issues. For performance issues, include your approximate project file size and VS Code version, and attach the activity log from Show Activity Log.
+The test harness runs under plain Node against a stub `vscode` module (`scripts/vscode-stub.js`), so the parser, writer, aggregate, creator, backup and binary layers are all testable without an Extension Development Host. `scripts/` also holds the binary-format diff and read-path tools used when extending RbBF support.
 
-License
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Make and test your changes — test with both small and large (>10 MB) project files
+4. Run `npm run lint` and `npm test` before committing
+5. Open a pull request with a description of what changed and why
+
+Bug reports and feature requests are welcome via [GitHub Issues](https://github.com/StealthUE/Xojo-VSCode-Plugin/issues). For performance issues, include your approximate project file size and VS Code version, and attach the activity log from **Show Activity Log**.
+
+---
+
+## License
+
 MIT
